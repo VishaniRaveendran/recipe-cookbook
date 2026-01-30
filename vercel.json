@@ -1,5 +1,7 @@
 {
   "version": 2,
+  "buildCommand": null,
+  "outputDirectory": null,
   "functions": {
     "api/parse.ts": {
       "runtime": "@vercel/node@3"

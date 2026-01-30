@@ -124,9 +124,10 @@ You should get JSON with `title`, `ingredients`, and `steps`.
 
 **If you get 404 NOT_FOUND:**
 
-1. **Root Directory** — In Vercel → Project → **Settings** → **General**, set **Root Directory** to the repo root (or leave empty). If it points to a subfolder (e.g. `app`), the `api/` folder at the root won’t be deployed.
-2. **Commit and redeploy** — Ensure `api/parse.ts` and `vercel.json` are committed. Redeploy (Vercel → Deployments → ⋮ on latest → Redeploy).
-3. **`vercel.json`** — The repo includes a `vercel.json` that registers `api/parse.ts` as a serverless function; keep it so `/api/parse` is served.
+1. **Build settings** — In Vercel → **Settings** → **General** → **Build & Development Settings**: set **Framework Preset** to **Other** (not Expo). Clear **Build Command** and **Output Directory**. Set **Root Directory** to empty. Save, then **Redeploy**. When Expo is selected, Vercel can skip the `api/` folder.
+2. **Root Directory** — Set to repo root (or leave empty). If it points to a subfolder (e.g. `app`), the `api/` folder at the root won’t be deployed.
+3. **Commit and redeploy** — Ensure `api/parse.ts` and `vercel.json` are committed. Redeploy (Vercel → Deployments → ⋮ on latest → Redeploy).
+4. **`vercel.json`** — The repo includes a `vercel.json` that registers `api/parse.ts` as a serverless function; keep it so `/api/parse` is served.
 
 Restart Expo after changing `.env`:
 
@@ -261,6 +262,35 @@ EXPO_PUBLIC_REVENUECAT_API_KEY_ANDROID=goog_xxxxxxxxxxxx
 - [ ] Paywall tested (Expo Go with Test Store, or device/simulator with sandbox/test account)
 
 After any `.env` change, restart Expo: `npx expo start`.
+
+---
+
+## Troubleshooting: "Database API URL not working" (Supabase)
+
+If the app can't reach the database (recipes/grocery list don't load, sign-in fails, or you see network/auth errors):
+
+1. **Check `.env`**
+
+   - You must have **both**:
+     - `EXPO_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co`
+     - `EXPO_PUBLIC_SUPABASE_ANON_KEY=eyJ...`
+   - Names must be **exact** (including `EXPO_PUBLIC_`). No spaces around `=`. No quotes unless the value has spaces.
+   - Get them from [Supabase](https://supabase.com/dashboard) → your project → **Project Settings** (gear) → **API** → **Project URL** and **anon public** key.
+
+2. **Restart Expo**
+
+   - Env vars are read when the app starts. After changing `.env`, stop the dev server (Ctrl+C) and run `npx expo start` again.
+
+3. **Supabase project paused**
+
+   - Free-tier projects pause after inactivity. In the dashboard, if the project shows **Paused**, click **Restore project**.
+
+4. **URL format**
+
+   - Use `https://your-project-ref.supabase.co` (no trailing slash, no path like `/rest/v1`).
+
+5. **Tables and RLS**
+   - Run `supabase/migrations/001_initial.sql` in Supabase **SQL Editor** so `recipes` and `grocery_lists` exist and RLS is set. Enable **Anonymous** (and optionally Email) under **Authentication** → **Providers**.
 
 ---
 
