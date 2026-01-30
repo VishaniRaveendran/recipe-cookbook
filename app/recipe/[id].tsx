@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
-import { StyleSheet, Pressable, ScrollView, Image } from "react-native";
+import { StyleSheet, Pressable, ScrollView, Image, Alert } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { useRecipes } from "@/hooks/useRecipes";
@@ -72,20 +72,42 @@ export default function RecipeDetailScreen() {
   }
 
   const handleAddToGroceryList = async () => {
-    if (!user?.id) return;
-    await createOrUpdateGroceryList(user.id, recipe.ingredients, recipe.id);
+    if (!user?.id) {
+      Alert.alert("Please wait", "Signing you in… Try again in a moment.");
+      return;
+    }
+    const { error } = await createOrUpdateGroceryList(
+      user.id,
+      recipe.ingredients,
+      recipe.id
+    );
+    if (error) {
+      Alert.alert("Could not add to grocery list", error);
+      return;
+    }
     router.push("/(tabs)/list");
   };
 
   const handleCookTonight = async () => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      Alert.alert("Please wait", "Signing you in… Try again in a moment.");
+      return;
+    }
     const allowed = cookTonightAllowed ?? (await canUseCookTonight(isPremium));
     if (!allowed) {
       router.push("/paywall");
       return;
     }
     if (!isPremium) await incrementCookTonightUsage();
-    await createOrUpdateGroceryList(user.id, recipe.ingredients, recipe.id);
+    const { error } = await createOrUpdateGroceryList(
+      user.id,
+      recipe.ingredients,
+      recipe.id
+    );
+    if (error) {
+      Alert.alert("Could not add to grocery list", error);
+      return;
+    }
     router.push("/(tabs)/list");
   };
 
@@ -96,8 +118,8 @@ export default function RecipeDetailScreen() {
 
   const handleStartCooking = () => {
     router.push({
-      pathname: `/recipe/${recipe.id}`,
-      params: { mode: "cooking" },
+      pathname: "/recipe/[id]",
+      params: { id: recipe.id, mode: "cooking" },
     });
   };
 

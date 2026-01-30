@@ -46,6 +46,31 @@ Mobile-first recipe organizer with smart grocery lists. Paste a recipe link → 
 - `lib/` — Supabase client, recipe parser, grocery categories.
 - `api/` — Optional Vercel serverless for URL → recipe parsing.
 
+## Open source & free options
+
+**Open source packages in this project**
+
+- [Expo](https://github.com/expo/expo) (BSD) — React Native tooling and runtime
+- [React Native](https://github.com/facebook/react-native) (MIT)
+- [Supabase JS](https://github.com/supabase/supabase-js) (MIT) — Auth + Postgres client
+- [React Navigation](https://github.com/react-navigation/react-navigation) (MIT)
+- [Expo Router](https://github.com/expo/expo-router) (MIT)
+- [react-native-purchases](https://github.com/RevenueCat/react-native-purchases) (MIT) — RevenueCat SDK (free to use; RevenueCat charges on revenue)
+
+**Free / open services you can use**
+
+- **Supabase** — Free tier (auth, Postgres, storage); [open source](https://github.com/supabase/supabase) self-host option
+- **Vercel** — Free tier for serverless (parser API)
+- **YouTube Data API v3** — Free quota (e.g. 10,000 units/day); 1 unit per video request
+- **RevenueCat** — Free tier; pay only on successful subscription revenue
+
+**Other open source options (not used here)**
+
+- **Auth:** [Supabase Auth](https://supabase.com/docs/guides/auth) (used), [Firebase Auth](https://firebase.google.com/docs/auth), [Clerk](https://clerk.com)
+- **DB:** Supabase (Postgres), [PocketBase](https://pocketbase.io/) (single binary, SQLite)
+- **Subscriptions:** RevenueCat (contest requirement); alternatives include [Adapty](https://adapty.io/), or native StoreKit/Play Billing with your own backend
+- **Recipe parsing:** Custom logic in `api/parse.ts`; no third-party recipe API required. For scraping, [Mozilla Readability](https://github.com/mozilla/readability) or similar could be added server-side.
+
 ## Contest alignment
 
 - **Audience Fit:** Eitan’s “save but don’t cook” problem → one flow from link to list to cook.

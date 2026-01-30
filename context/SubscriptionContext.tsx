@@ -1,11 +1,14 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 import { REVENUECAT_ENTITLEMENT_PREMIUM } from "@/constants/limits";
 
 const REVENUECAT_API_KEY_IOS =
   process.env.EXPO_PUBLIC_REVENUECAT_API_KEY_IOS ?? "";
 const REVENUECAT_API_KEY_ANDROID =
   process.env.EXPO_PUBLIC_REVENUECAT_API_KEY_ANDROID ?? "";
+const REVENUECAT_API_KEY_TEST =
+  process.env.EXPO_PUBLIC_REVENUECAT_API_KEY_TEST ?? "";
 
 type CustomerInfo = {
   entitlements: { active: Record<string, unknown> };
@@ -25,6 +28,16 @@ const SubscriptionContext = createContext<SubscriptionContextType | undefined>(
 
 const isNative = Platform.OS === "ios" || Platform.OS === "android";
 
+/** In Expo Go, RevenueCat requires the Test Store API key; platform keys are invalid. */
+const isExpoGo = Constants.appOwnership === "expo";
+
+function getRevenueCatApiKey(): string {
+  if (isExpoGo) return REVENUECAT_API_KEY_TEST;
+  return Platform.OS === "ios"
+    ? REVENUECAT_API_KEY_IOS
+    : REVENUECAT_API_KEY_ANDROID;
+}
+
 export function SubscriptionProvider({
   children,
   userId,
@@ -40,10 +53,7 @@ export function SubscriptionProvider({
       setIsLoading(false);
       return;
     }
-    const apiKey =
-      Platform.OS === "ios"
-        ? REVENUECAT_API_KEY_IOS
-        : REVENUECAT_API_KEY_ANDROID;
+    const apiKey = getRevenueCatApiKey();
     if (!apiKey) {
       setIsLoading(false);
       return;

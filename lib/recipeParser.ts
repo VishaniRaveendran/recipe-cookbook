@@ -2,12 +2,30 @@ import type { ParsedRecipe } from "@/types";
 
 const PARSER_API_URL = process.env.EXPO_PUBLIC_PARSER_API_URL ?? "";
 
+/** Build a friendly title for links we can't parse (YouTube, Instagram, etc.). */
+function getTitleFromUrl(url: string): string {
+  try {
+    const lower = url.toLowerCase();
+    if (lower.includes("youtube.com") || lower.includes("youtu.be"))
+      return "Recipe from YouTube";
+    if (lower.includes("instagram.com")) return "Recipe from Instagram";
+    if (lower.includes("tiktok.com")) return "Recipe from TikTok";
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    return `Recipe from ${host}`;
+  } catch {
+    return "Recipe from link";
+  }
+}
+
 export async function parseRecipeFromUrl(
   url: string
 ): Promise<ParsedRecipe | null> {
   if (!url.trim()) return null;
   const trimmed = url.trim();
-  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+  const isUrl = trimmed.startsWith("http://") || trimmed.startsWith("https://");
+
+  if (!isUrl) {
     return parseWithHeuristics(trimmed);
   }
 
@@ -18,21 +36,33 @@ export async function parseRecipeFromUrl(
       );
       if (res.ok) {
         const data = await res.json();
-        if (data?.title && Array.isArray(data?.ingredients)) {
-          return {
-            title: data.title,
-            imageUrl: data.imageUrl ?? undefined,
-            ingredients: data.ingredients,
-            steps: Array.isArray(data.steps) ? data.steps : [],
-          };
-        }
+        const title =
+          data?.title && typeof data.title === "string"
+            ? data.title.trim()
+            : getTitleFromUrl(trimmed);
+        const ingredients = Array.isArray(data?.ingredients)
+          ? data.ingredients
+          : [];
+        const steps = Array.isArray(data?.steps) ? data.steps : [];
+        return {
+          title: title || getTitleFromUrl(trimmed),
+          imageUrl:
+            typeof data?.imageUrl === "string" ? data.imageUrl : undefined,
+          ingredients,
+          steps,
+        };
       }
     } catch {
-      // fall through to heuristics
+      // use manual-entry result below
     }
   }
 
-  return parseWithHeuristics(trimmed);
+  // URL but no API or API failed: show manual entry with a friendly title
+  return {
+    title: getTitleFromUrl(trimmed),
+    ingredients: [],
+    steps: [],
+  };
 }
 
 function parseWithHeuristics(input: string): ParsedRecipe | null {

@@ -1,1 +1,8 @@
-{}
+{
+  "version": 2,
+  "functions": {
+    "api/parse.ts": {
+      "runtime": "@vercel/node@3"
+    }
+  }
+}

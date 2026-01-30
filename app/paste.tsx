@@ -38,17 +38,14 @@ export default function PasteScreen() {
     setParsed(null);
     try {
       const result = await parseRecipeFromUrl(trimmed);
-      if (result && (result.ingredients.length > 0 || result.title)) {
-        setParsed(result);
-        setShowManual(false);
-      } else {
+      if (!result) {
         setShowManual(true);
-        setParsed({
-          title: result?.title ?? "Untitled Recipe",
-          ingredients: [],
-          steps: result?.steps ?? [],
-        });
+        setParsed({ title: "Untitled Recipe", ingredients: [], steps: [] });
+        return;
       }
+      setParsed(result);
+      // When we couldn't extract ingredients (e.g. YouTube, Instagram), show manual entry
+      setShowManual(result.ingredients.length === 0);
     } catch {
       setShowManual(true);
       setParsed({ title: "Untitled Recipe", ingredients: [], steps: [] });
@@ -58,7 +55,14 @@ export default function PasteScreen() {
   };
 
   const handleSaveAndAddToList = async () => {
-    if (!user || !parsed) return;
+    if (!parsed) return;
+    if (!user) {
+      Alert.alert(
+        "Please wait",
+        "Signing you in… Try again in a moment, or check your internet connection."
+      );
+      return;
+    }
     if (atRecipeLimit) {
       router.push("/paywall");
       return;
@@ -73,29 +77,47 @@ export default function PasteScreen() {
     }
     setLoading(true);
     try {
-      const recipe = await insertRecipe(user.id, {
+      const { recipe, error: recipeError } = await insertRecipe(user.id, {
         sourceUrl: url.trim() || "manual",
         title: parsed.title || "Untitled Recipe",
         imageUrl: parsed.imageUrl,
         ingredients,
         steps: parsed.steps,
       });
-      if (recipe) {
-        await createOrUpdateGroceryList(user.id, ingredients, recipe.id);
-        router.back();
-        router.push("/(tabs)/list");
-      } else {
-        Alert.alert("Error", "Could not save recipe.");
+      if (recipeError) {
+        Alert.alert("Could not save recipe", recipeError);
+        return;
       }
-    } catch {
-      Alert.alert("Error", "Could not save recipe.");
+      if (!recipe) return;
+      const { error: listError } = await createOrUpdateGroceryList(
+        user.id,
+        ingredients,
+        recipe.id
+      );
+      if (listError) {
+        Alert.alert("Recipe saved, but grocery list failed", listError);
+      }
+      router.back();
+      router.push("/(tabs)/list");
+    } catch (e) {
+      Alert.alert(
+        "Error",
+        e instanceof Error ? e.message : "Could not save recipe."
+      );
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveOnly = async () => {
-    if (!user || !parsed) return;
+    if (!parsed) return;
+    if (!user) {
+      Alert.alert(
+        "Please wait",
+        "Signing you in… Try again in a moment, or check your internet connection."
+      );
+      return;
+    }
     if (atRecipeLimit) {
       router.push("/paywall");
       return;
@@ -106,21 +128,26 @@ export default function PasteScreen() {
         : parsed.ingredients;
     setLoading(true);
     try {
-      const recipe = await insertRecipe(user.id, {
+      const { recipe, error: recipeError } = await insertRecipe(user.id, {
         sourceUrl: url.trim() || "manual",
         title: parsed.title || "Untitled Recipe",
         imageUrl: parsed.imageUrl,
         ingredients,
         steps: parsed.steps,
       });
+      if (recipeError) {
+        Alert.alert("Could not save recipe", recipeError);
+        return;
+      }
       if (recipe) {
         router.back();
         router.push(`/recipe/${recipe.id}`);
-      } else {
-        Alert.alert("Error", "Could not save recipe.");
       }
-    } catch {
-      Alert.alert("Error", "Could not save recipe.");
+    } catch (e) {
+      Alert.alert(
+        "Error",
+        e instanceof Error ? e.message : "Could not save recipe."
+      );
     } finally {
       setLoading(false);
     }
@@ -172,6 +199,11 @@ export default function PasteScreen() {
           <Text style={styles.previewTitle}>{parsed.title}</Text>
           {showManual ? (
             <>
+              <Text style={styles.manualHint}>
+                No ingredients were found. Paste the recipe name above and
+                ingredients below (from the video or page). For auto-extract,
+                set EXPO_PUBLIC_PARSER_API_URL in .env — see SETUP.md.
+              </Text>
               <Text style={styles.sectionLabel}>
                 Ingredients (one per line)
               </Text>
@@ -268,6 +300,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   previewTitle: { fontSize: 22, fontWeight: "700", marginBottom: 16 },
+  manualHint: {
+    fontSize: 14,
+    opacity: 0.8,
+    marginBottom: 12,
+    lineHeight: 20,
+  },
   sectionLabel: { fontSize: 15, fontWeight: "600", marginBottom: 8 },
   textArea: {
     borderWidth: 1,

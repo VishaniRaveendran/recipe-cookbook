@@ -89,7 +89,7 @@ export async function insertRecipe(
     ingredients: string[];
     steps: string[];
   }
-): Promise<Recipe | null> {
+): Promise<{ recipe: Recipe | null; error: string | null }> {
   const { data, error } = await supabase
     .from("recipes")
     .insert({
@@ -102,8 +102,8 @@ export async function insertRecipe(
     } as Record<string, unknown>)
     .select()
     .single();
-  if (error) return null;
-  return mapRow(data);
+  if (error) return { recipe: null, error: error.message };
+  return { recipe: mapRow(data), error: null };
 }
 
 export async function markCooked(recipeId: string): Promise<boolean> {

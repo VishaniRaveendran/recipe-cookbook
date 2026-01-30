@@ -112,15 +112,17 @@ export async function createOrUpdateGroceryList(
   userId: string,
   ingredients: string[],
   recipeId?: string | null
-): Promise<GroceryList | null> {
+): Promise<{ list: GroceryList | null; error: string | null }> {
   const newItems = ingredients.map(ingredientToItem);
-  const { data: existing } = await supabase
+  const { data: existing, error: fetchError } = await supabase
     .from("grocery_lists")
     .select("*")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+
+  if (fetchError) return { list: null, error: fetchError.message };
 
   if (existing) {
     const currentItems = (existing as { items: GroceryItem[] }).items ?? [];
@@ -141,8 +143,8 @@ export async function createOrUpdateGroceryList(
       .eq("id", (existing as { id: string }).id)
       .select()
       .single();
-    if (error) return null;
-    return mapRow(data as Parameters<typeof mapRow>[0]);
+    if (error) return { list: null, error: error.message };
+    return { list: mapRow(data as Parameters<typeof mapRow>[0]), error: null };
   }
 
   const { data, error } = await supabase
@@ -154,8 +156,8 @@ export async function createOrUpdateGroceryList(
     } as Record<string, unknown>)
     .select()
     .single();
-  if (error) return null;
-  return mapRow(data as Parameters<typeof mapRow>[0]);
+  if (error) return { list: null, error: error.message };
+  return { list: mapRow(data as Parameters<typeof mapRow>[0]), error: null };
 }
 
 export async function toggleGroceryItem(

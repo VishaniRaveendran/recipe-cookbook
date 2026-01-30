@@ -19,17 +19,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
+    let cancelled = false;
+    (async () => {
+      const {
+        data: { session: s },
+      } = await supabase.auth.getSession();
+      if (cancelled) return;
       setSession(s);
       setUser(s?.user ?? null);
       if (!s) {
-        supabase.auth.signInAnonymously().then(({ data: { session: s2 } }) => {
-          setSession(s2);
-          setUser(s2?.user ?? null);
-        });
+        const {
+          data: { session: s2 },
+          error,
+        } = await supabase.auth.signInAnonymously();
+        if (!cancelled) {
+          if (error) {
+            console.warn(
+              "Anonymous sign-in failed (enable Anonymous auth in Supabase):",
+              error.message
+            );
+          } else {
+            setSession(s2);
+            setUser(s2?.user ?? null);
+          }
+        }
       }
       setIsLoading(false);
-    });
+    })();
 
     const {
       data: { subscription },
@@ -38,7 +54,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(s?.user ?? null);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signInAnonymously = async () => {
