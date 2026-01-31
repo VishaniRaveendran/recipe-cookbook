@@ -178,11 +178,20 @@ function isYouTubeUrl(url: string): boolean {
   }
 }
 
+/** Browser-like User-Agent and headers so Instagram/TikTok/Facebook may serve og:image and full HTML. */
+const BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
 /** Fetch image from URL and return base64 string. */
 async function fetchImageAsBase64(imageUrl: string): Promise<string | null> {
   try {
     const res = await fetch(imageUrl, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; RecipeParser/1.0)" },
+      headers: BROWSER_HEADERS,
     });
     if (!res.ok) return null;
     const buf = await res.arrayBuffer();
@@ -376,7 +385,7 @@ async function getRecipeFromYouTubeVideoWithGemini(
   }
 }
 
-/** Map VideoRecipeParsed to ingredients string[], steps, servings number, and groceryByAisle. */
+/** Map VideoRecipeParsed to ingredients string[], steps, servings. Returns flat ingredients list only (no aisle grouping). */
 function mapVideoRecipeToResponse(
   parsed: VideoRecipeParsed,
   fallbackTitle: string,
@@ -385,8 +394,6 @@ function mapVideoRecipeToResponse(
   const title = (parsed.title && String(parsed.title).trim()) || fallbackTitle;
   const ingredientsRaw = parsed.ingredients ?? [];
   const ingredients: string[] = [];
-  const byAisle = new Map<string, string[]>();
-  for (const a of AISLES) byAisle.set(a, []);
   const seen = new Set<string>();
   for (const ing of ingredientsRaw) {
     // Support { name }, { name, quantity }, { name, quantity, notes }, or string
@@ -400,20 +407,11 @@ function mapVideoRecipeToResponse(
     const quantity = ing && typeof ing === "object" && ing.quantity ? String(ing.quantity).trim() : "";
     const notes = ing && typeof ing === "object" && ing.notes ? String(ing.notes).trim() : "";
     const line = [quantity, name].filter(Boolean).join(" ") + (notes ? ` (${notes})` : "");
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     ingredients.push(line);
-    const key = name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      const aisle = categorizeIngredientToAisle(name);
-      const list = byAisle.get(aisle) ?? [];
-      list.push(line);
-      byAisle.set(aisle, list);
-    }
   }
-  const groceryByAisle: GroceryByAisle[] = AISLES.map((aisle) => ({
-    aisle,
-    items: byAisle.get(aisle) ?? [],
-  })).filter((g) => g.items.length > 0);
   const steps =
     Array.isArray(parsed.instructions)
       ? parsed.instructions.filter((s): s is string => typeof s === "string").slice(0, 50)
@@ -428,7 +426,7 @@ function mapVideoRecipeToResponse(
     ingredients,
     steps,
     servings: Number.isFinite(servings) && servings > 0 ? servings : 4,
-    groceryByAisle,
+    groceryByAisle: [], // Flat list only; no aisle grouping.
   };
   const out = response as ParseResponse & Record<string, unknown>;
   if (parsed.cookingTime) out.cookingTime = parsed.cookingTime;
@@ -564,7 +562,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; RecipeParser/1.0)" },
+      headers: BROWSER_HEADERS,
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const html = await response.text();
@@ -608,14 +606,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           );
         if (aiIngredients.length > 0) {
           const ingredients = aiIngredients.map((x) => x.name);
-          const groceryByAisle = buildGroceryByAisle(aiIngredients);
           const responsePayload: ParseResponse = {
             title: recipe.title,
             imageUrl: recipe.imageUrl,
             ingredients,
             steps: aiSteps.length > 0 ? aiSteps : recipe.steps,
             servings: recipe.servings,
-            groceryByAisle,
+            groceryByAisle: [], // Flat list only; no aisle grouping.
           };
           return res.status(200).json(responsePayload);
         }
