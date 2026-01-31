@@ -44,12 +44,33 @@ export async function parseRecipeFromUrl(
           ? data.ingredients
           : [];
         const steps = Array.isArray(data?.steps) ? data.steps : [];
+        const servings =
+          typeof data?.servings === "number" && data.servings > 0
+            ? data.servings
+            : undefined;
+        const groceryByAisle = Array.isArray(data?.groceryByAisle)
+          ? data.groceryByAisle
+              .filter(
+                (g: unknown) =>
+                  g != null &&
+                  typeof g === "object" &&
+                  typeof (g as { aisle?: unknown }).aisle === "string" &&
+                  Array.isArray((g as { items?: unknown }).items)
+              )
+              .map((g: { aisle: string; items: unknown[] }): { aisle: string; items: string[] } => ({
+                aisle: g.aisle,
+                items: g.items.filter((i): i is string => typeof i === "string"),
+              }))
+              .filter((g: { aisle: string; items: string[] }) => g.items.length > 0)
+          : undefined;
         return {
           title: title || getTitleFromUrl(trimmed),
           imageUrl:
             typeof data?.imageUrl === "string" ? data.imageUrl : undefined,
           ingredients,
           steps,
+          ...(servings != null && { servings }),
+          ...(groceryByAisle?.length ? { groceryByAisle } : {}),
         };
       }
     } catch {
@@ -62,6 +83,7 @@ export async function parseRecipeFromUrl(
     title: getTitleFromUrl(trimmed),
     ingredients: [],
     steps: [],
+    servings: 4,
   };
 }
 
@@ -129,6 +151,7 @@ function parseWithHeuristics(input: string): ParsedRecipe | null {
     title: title || "Untitled Recipe",
     ingredients: ingredients.length > 0 ? ingredients : [],
     steps: steps.length > 0 ? steps : [],
+    servings: 4,
   };
 }
 

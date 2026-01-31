@@ -3,6 +3,8 @@ import { useRouter } from "expo-router";
 import { StyleSheet, Pressable, Alert } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSubscription } from "@/context/SubscriptionContext";
+import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/Colors";
 import { Text, View } from "@/components/Themed";
 
 export default function SettingsScreen() {
@@ -10,6 +12,10 @@ export default function SettingsScreen() {
   const { user, signOut } = useAuth();
   const { isPremium, restorePurchases } = useSubscription();
   const [restoring, setRestoring] = React.useState(false);
+  const colorScheme = useColorScheme();
+  const primary =
+    Colors[colorScheme ?? "light"].primary ??
+    Colors[colorScheme ?? "light"].tint;
 
   const handleRestore = async () => {
     setRestoring(true);
@@ -45,7 +51,9 @@ export default function SettingsScreen() {
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
             onPress={() => router.push("/paywall")}
           >
-            <Text style={styles.rowTitle}>Unlock premium</Text>
+            <Text style={[styles.rowTitle, { color: primary }]}>
+              Unlock premium
+            </Text>
             <Text style={styles.rowSubtitle}>
               Unlimited recipes & Cook Tonight
             </Text>

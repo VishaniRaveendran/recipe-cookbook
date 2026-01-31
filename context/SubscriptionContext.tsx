@@ -1,7 +1,11 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import { REVENUECAT_ENTITLEMENT_PREMIUM } from "@/constants/limits";
+import {
+  REVENUECAT_ENTITLEMENT_PREMIUM,
+  REVENUECAT_ENTITLEMENT_PRO_SUBSCRIPTION,
+  REVENUECAT_ENTITLEMENT_RECIPE_PACK,
+} from "@/constants/limits";
 
 const REVENUECAT_API_KEY_IOS =
   process.env.EXPO_PUBLIC_REVENUECAT_API_KEY_IOS ?? "";
@@ -16,6 +20,8 @@ type CustomerInfo = {
 
 type SubscriptionContextType = {
   isPremium: boolean;
+  isPro: boolean;
+  hasRecipePack: boolean;
   customerInfo: CustomerInfo | null;
   isLoading: boolean;
   refreshCustomerInfo: () => Promise<void>;
@@ -95,23 +101,33 @@ export function SubscriptionProvider({
       const { default: Purchases } = await import("react-native-purchases");
       const info = await Purchases.restorePurchases();
       setCustomerInfo(info);
+      const active = info.entitlements?.active ?? {};
       return (
-        (info.entitlements.active[REVENUECAT_ENTITLEMENT_PREMIUM] ?? null) !=
-        null
+        (active[REVENUECAT_ENTITLEMENT_PRO_SUBSCRIPTION] ?? null) != null ||
+        (active[REVENUECAT_ENTITLEMENT_RECIPE_PACK] ?? null) != null ||
+        (active[REVENUECAT_ENTITLEMENT_PREMIUM] ?? null) != null
       );
     } catch {
       return false;
     }
   };
 
+  const active = customerInfo?.entitlements?.active ?? {};
+  const isPro =
+    (active[REVENUECAT_ENTITLEMENT_PRO_SUBSCRIPTION] ?? null) != null;
+  const hasRecipePack =
+    (active[REVENUECAT_ENTITLEMENT_RECIPE_PACK] ?? null) != null;
   const isPremium =
-    (customerInfo?.entitlements?.active?.[REVENUECAT_ENTITLEMENT_PREMIUM] ??
-      null) != null;
+    isPro ||
+    hasRecipePack ||
+    (active[REVENUECAT_ENTITLEMENT_PREMIUM] ?? null) != null;
 
   return (
     <SubscriptionContext.Provider
       value={{
         isPremium,
+        isPro,
+        hasRecipePack,
         customerInfo,
         isLoading,
         refreshCustomerInfo,

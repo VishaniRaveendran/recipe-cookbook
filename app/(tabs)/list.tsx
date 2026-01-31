@@ -1,16 +1,35 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { StyleSheet, Pressable, ScrollView } from "react-native";
 import { useAuth } from "@/context/AuthContext";
+import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/Colors";
 import {
   useGroceryList,
   itemsByCategory,
   toggleGroceryItem,
+  groceryListQueryKey,
 } from "@/hooks/useGroceryList";
 import { GROCERY_CATEGORY_ORDER } from "@/lib/groceryCategories";
+import type { GroceryItem } from "@/types";
 import { Text, View } from "@/components/Themed";
 
 export default function GroceryListScreen() {
+  const queryClient = useQueryClient();
   const { user } = useAuth();
   const { list, loading } = useGroceryList(user?.id);
+  const colorScheme = useColorScheme();
+  const primary = Colors[colorScheme ?? "light"].primary ?? Colors[colorScheme ?? "light"].tint;
+
+  const handleToggle = async (
+    listId: string,
+    items: GroceryItem[],
+    itemId: string
+  ) => {
+    await toggleGroceryItem(listId, items, itemId);
+    queryClient.invalidateQueries({
+      queryKey: groceryListQueryKey(user?.id),
+    });
+  };
 
   if (loading) {
     return (
@@ -50,12 +69,14 @@ export default function GroceryListScreen() {
                   styles.row,
                   pressed && styles.rowPressed,
                 ]}
-                onPress={() => toggleGroceryItem(list.id, list.items, item.id)}
+                onPress={() => handleToggle(list.id, list.items, item.id)}
               >
                 <View
                   style={[
                     styles.checkbox,
                     item.checked && styles.checkboxChecked,
+                    { borderColor: primary },
+                    item.checked && { backgroundColor: primary },
                   ]}
                 >
                   {item.checked && <Text style={styles.checkmark}>✓</Text>}
@@ -81,12 +102,14 @@ export default function GroceryListScreen() {
                 styles.row,
                 pressed && styles.rowPressed,
               ]}
-              onPress={() => toggleGroceryItem(list.id, list.items, item.id)}
+              onPress={() => handleToggle(list.id, list.items, item.id)}
             >
               <View
                 style={[
                   styles.checkbox,
                   item.checked && styles.checkboxChecked,
+                  { borderColor: primary },
+                  item.checked && { backgroundColor: primary },
                 ]}
               >
                 {item.checked && <Text style={styles.checkmark}>✓</Text>}
@@ -133,14 +156,11 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 6,
     borderWidth: 2,
-    borderColor: "#2f95dc",
     marginRight: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  checkboxChecked: {
-    backgroundColor: "#2f95dc",
-  },
+  checkboxChecked: {},
   checkmark: {
     color: "#fff",
     fontSize: 14,

@@ -1,253 +1,35 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
+/** Aisle names for supermarket categorization (must match app GroceryCategory). */
+const AISLES = [
+  "Produce",
+  "Dairy",
+  "Meat",
+  "Pantry",
+  "Bakery",
+  "Frozen",
+  "Other",
+] as const;
+
 interface ParsedRecipe {
   title: string;
   imageUrl?: string;
   ingredients: string[];
   steps: string[];
+  servings?: number;
 }
 
-/** Extract YouTube video ID from watch or short URL. */
-function getYouTubeVideoId(url: string): string | null {
-  try {
-    const u = new URL(url);
-    if (u.hostname === "www.youtube.com" || u.hostname === "youtube.com") {
-      return u.searchParams.get("v");
-    }
-    if (u.hostname === "youtu.be") return u.pathname.slice(1).split("/")[0];
-    return null;
-  } catch {
-    return null;
-  }
+/** Grocery list grouped by supermarket aisle. */
+export interface GroceryByAisle {
+  aisle: string;
+  items: string[];
 }
 
-/** Parse recipe from video description text (Ingredients / Instructions sections). */
-function parseDescriptionToRecipe(
-  description: string,
-  title: string,
-  imageUrl?: string
-): ParsedRecipe {
-  const lines = description
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const ingredients: string[] = [];
-  const steps: string[] = [];
-  let section: "ingredients" | "steps" | null = null;
-  const ingredientKeywords = [
-    "cup",
-    "tbsp",
-    "tsp",
-    "oz",
-    "lb",
-    "clove",
-    "can",
-    "pinch",
-    "chopped",
-    "diced",
-    "minced",
-    "slice",
-    "g",
-    "ml",
-    "salt",
-    "pepper",
-    "oil",
-    "water",
-    "flour",
-    "sugar",
-    "egg",
-    "butter",
-    "garlic",
-    "onion",
-  ];
-
-  for (const line of lines) {
-    const lower = line.toLowerCase();
-    if (/^(ingredients?|what you need):?\s*$/i.test(lower)) {
-      section = "ingredients";
-      continue;
-    }
-    if (
-      /^(instructions?|directions?|steps?|method):?\s*$/i.test(lower) ||
-      /^(how to make|recipe):?\s*$/i.test(lower)
-    ) {
-      section = "steps";
-      continue;
-    }
-    const isBullet =
-      /^[\-\*\•]\s+/.test(line) ||
-      /^\d+[\.\)]\s+/.test(line) ||
-      /^\d+\.\s+/.test(line);
-    const text = line
-      .replace(/^[\-\*\•]\s*/, "")
-      .replace(/^\d+[\.\)]\s*/, "")
-      .trim();
-    if (!text || text.length > 300) continue;
-
-    if (section === "ingredients") {
-      if (
-        ingredientKeywords.some((k) => lower.includes(k)) ||
-        /^\d+[\s\/]*(cup|tbsp|tsp|oz|lb|g|ml)/.test(lower) ||
-        isBullet
-      ) {
-        ingredients.push(text);
-      }
-    } else if (section === "steps") {
-      if (isBullet || /^\d+\./.test(line) || text.length > 20) {
-        steps.push(text);
-      }
-    } else {
-      if (
-        ingredientKeywords.some((k) => lower.includes(k)) &&
-        text.length < 150
-      ) {
-        ingredients.push(text);
-      }
-    }
-  }
-
-  return {
-    title,
-    imageUrl,
-    ingredients: ingredients.slice(0, 80),
-    steps: steps.slice(0, 30).filter((s) => s.length > 5),
-  };
+interface ParseResponse extends ParsedRecipe {
+  groceryByAisle?: GroceryByAisle[];
 }
 
-/** Fetch video captions/transcript (no API key). Returns combined text or null. */
-async function fetchTranscriptText(videoId: string): Promise<string | null> {
-  try {
-    const { YoutubeTranscript } = await import("youtube-transcript");
-    const chunks = await YoutubeTranscript.fetchTranscript(videoId);
-    if (!Array.isArray(chunks) || chunks.length === 0) return null;
-    const text = chunks
-      .map((c: { text?: string }) =>
-        c && typeof c.text === "string" ? c.text : ""
-      )
-      .filter(Boolean)
-      .join(" ");
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Extract ingredient-like phrases from spoken transcript (e.g. "we need 2 cups flour"). */
-function parseTranscriptForIngredients(transcript: string): string[] {
-  const ingredients: string[] = [];
-  const seen = new Set<string>();
-  const lower = transcript.toLowerCase();
-  const keywords = [
-    "cup",
-    "cups",
-    "tbsp",
-    "tsp",
-    "oz",
-    "lb",
-    "clove",
-    "can",
-    "pinch",
-    "chopped",
-    "diced",
-    "minced",
-    "salt",
-    "pepper",
-    "flour",
-    "sugar",
-    "egg",
-    "eggs",
-    "butter",
-    "garlic",
-    "onion",
-    "oil",
-    "water",
-    "ml",
-    "g",
-  ];
-  const quantityPattern =
-    /\d+\s*(?:\.\d+)?\s*(?:cup|tbsp|tsp|oz|lb|g|ml)s?\s+(?:of\s+)?[\w\s]+/gi;
-  let m: RegExpExecArray | null;
-  while ((m = quantityPattern.exec(transcript)) !== null) {
-    const phrase = m[0].trim();
-    if (phrase.length > 3 && phrase.length < 120) {
-      const key = phrase.toLowerCase();
-      if (!seen.has(key)) {
-        seen.add(key);
-        ingredients.push(phrase);
-      }
-    }
-  }
-  const sentences = transcript.split(/[.!?]\s+/);
-  for (const sent of sentences) {
-    const s = sent.trim();
-    if (s.length < 10 || s.length > 200) continue;
-    const sl = s.toLowerCase();
-    if (keywords.some((k) => sl.includes(k))) {
-      const key = s.toLowerCase().slice(0, 80);
-      if (!seen.has(key)) {
-        seen.add(key);
-        ingredients.push(s);
-      }
-    }
-  }
-  return ingredients.slice(0, 50);
-}
-
-async function fetchYouTubeRecipe(
-  videoId: string,
-  apiKey: string
-): Promise<ParsedRecipe | null> {
-  const res = await fetch(
-    `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${apiKey}`
-  );
-  if (!res.ok) return null;
-  const data = await res.json();
-  const item = data?.items?.[0];
-  if (!item?.snippet) return null;
-  const { title, description, thumbnails } = item.snippet;
-  const imageUrl =
-    thumbnails?.maxres?.url ?? thumbnails?.high?.url ?? thumbnails?.medium?.url;
-  const fromDescription = parseDescriptionToRecipe(
-    description || "",
-    title || "YouTube recipe",
-    imageUrl
-  );
-  const transcriptText = await fetchTranscriptText(videoId);
-  if (transcriptText && fromDescription.ingredients.length < 5) {
-    const fromTranscript = parseTranscriptForIngredients(transcriptText);
-    const merged = [...fromDescription.ingredients];
-    const seen = new Set(merged.map((i) => i.toLowerCase().slice(0, 50)));
-    for (const ing of fromTranscript) {
-      const key = ing.toLowerCase().slice(0, 50);
-      if (!seen.has(key)) {
-        seen.add(key);
-        merged.push(ing);
-      }
-    }
-    return {
-      ...fromDescription,
-      ingredients: merged.slice(0, 80),
-    };
-  }
-  return fromDescription;
-}
-
-/** YouTube recipe using only transcript (no YOUTUBE_API_KEY). */
-async function fetchYouTubeRecipeFromTranscript(
-  videoId: string
-): Promise<ParsedRecipe | null> {
-  const transcriptText = await fetchTranscriptText(videoId);
-  if (!transcriptText || transcriptText.length < 50) return null;
-  const ingredients = parseTranscriptForIngredients(transcriptText);
-  if (ingredients.length === 0) return null;
-  return {
-    title: "Recipe from YouTube",
-    ingredients,
-    steps: [],
-  };
-}
-
-function extractFromHtml(html: string): ParsedRecipe {
+function extractFromHtml(html: string, isVideoOrSocialUrl: boolean): ParsedRecipe {
   const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
   const title = titleMatch
     ? titleMatch[1].trim().replace(/&[^;]+;/g, " ")
@@ -284,11 +66,18 @@ function extractFromHtml(html: string): ParsedRecipe {
               typeof s === "string" ? s : s.text ?? ""
             )
           : [];
+        const servings =
+          typeof recipe.recipeYield === "number"
+            ? recipe.recipeYield
+            : typeof recipe.recipeYield === "string"
+            ? parseInt(recipe.recipeYield, 10)
+            : 4;
         return {
           title: recipe.name ?? title,
           imageUrl: recipe.image?.[0] ?? recipe.image ?? imageUrl,
           ingredients,
           steps: steps.filter(Boolean),
+          servings: Number.isFinite(servings) ? servings : 4,
         };
       }
     } catch {
@@ -296,31 +85,291 @@ function extractFromHtml(html: string): ParsedRecipe {
     }
   }
 
-  const listMatch = html.match(/<ul[^>]*>([\s\S]*?)<\/ul>/gi);
+  // For video/social URLs (YouTube, TikTok, Instagram), do not use page <ul> as ingredients.
   const ingredients: string[] = [];
-  if (listMatch) {
-    for (const list of listMatch) {
-      const items = list.match(/<li[^>]*>([\s\S]*?)<\/li>/gi);
-      if (items && items.length >= 2 && items.length <= 50) {
-        for (const item of items) {
-          const text = item
-            .replace(/<[^>]+>/g, "")
-            .replace(/&[^;]+;/g, " ")
-            .trim();
-          if (text.length > 2 && text.length < 200) ingredients.push(text);
+  if (!isVideoOrSocialUrl) {
+    const listMatch = html.match(/<ul[^>]*>([\s\S]*?)<\/ul>/gi);
+    if (listMatch) {
+      for (const list of listMatch) {
+        const items = list.match(/<li[^>]*>([\s\S]*?)<\/li>/gi);
+        if (items && items.length >= 2 && items.length <= 50) {
+          for (const item of items) {
+            const text = item
+              .replace(/<[^>]+>/g, "")
+              .replace(/&[^;]+;/g, " ")
+              .trim();
+            if (text.length > 2 && text.length < 200) ingredients.push(text);
+          }
+          if (ingredients.length > 0) break;
         }
-        if (ingredients.length > 0) break;
       }
     }
   }
 
-  return { title, imageUrl, ingredients, steps: [] };
+  return { title, imageUrl, ingredients, steps: [], servings: 4 };
+}
+
+/** Extract og:description from HTML for optional context to AI. */
+function extractOgDescription(html: string): string | undefined {
+  const m =
+    html.match(
+      /<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:description["']/i
+    );
+  if (!m || !m[1]) return undefined;
+  const raw = m[1].trim().replace(/&[^;]+;/g, " ").slice(0, 2000);
+  return raw || undefined;
 }
 
 function setCors(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function isVideoOrSocialUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    return (
+      h.includes("youtube.com") ||
+      h.includes("youtu.be") ||
+      h.includes("tiktok.com") ||
+      h.includes("instagram.com") ||
+      h.includes("facebook.com") ||
+      h.includes("fb.watch") ||
+      h.includes("fb.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** True if URL is a public YouTube watch or short link (Gemini can accept these as video input). */
+function isYouTubeUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    if (h === "www.youtube.com" || h === "youtube.com")
+      return u.pathname === "/watch" && u.searchParams.has("v");
+    if (h === "youtu.be") return u.pathname.length > 1;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Fetch image from URL and return base64 string. */
+async function fetchImageAsBase64(imageUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(imageUrl, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; RecipeParser/1.0)" },
+    });
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    const base64 = Buffer.from(buf).toString("base64");
+    return base64 || null;
+  } catch {
+    return null;
+  }
+}
+
+const VISION_PROMPT = `You are analyzing a preview image (and optional text) from a recipe or cooking video (YouTube, TikTok, Instagram, or similar).
+
+Tasks:
+1. List every ingredient you can identify from the image or implied by the recipe/video. Use short grocery-style labels (e.g. "tomatoes", "olive oil", "fresh basil").
+2. For each ingredient, assign exactly one supermarket aisle. Use ONLY one of these exact names: Produce, Dairy, Meat, Pantry, Bakery, Frozen, Other.
+
+Respond with ONLY a valid JSON object, no markdown or explanation. Format:
+{
+  "ingredients": [
+    { "name": "ingredient name", "aisle": "Produce" },
+    { "name": "another ingredient", "aisle": "Pantry" }
+  ],
+  "steps": ["optional step 1", "optional step 2"]
+}
+If you cannot determine steps, omit "steps" or use an empty array. Every ingredient must have "name" and "aisle".`;
+
+/** Prompt when Gemini receives the actual video (YouTube URL); same output format. */
+const VIDEO_PROMPT = `You are analyzing a cooking or recipe video.
+
+Tasks:
+1. List every ingredient you can identify from the video (what is shown or mentioned). Use short grocery-style labels (e.g. "tomatoes", "olive oil", "fresh basil").
+2. For each ingredient, assign exactly one supermarket aisle. Use ONLY one of these exact names: Produce, Dairy, Meat, Pantry, Bakery, Frozen, Other.
+
+Respond with ONLY a valid JSON object, no markdown or explanation. Format:
+{
+  "ingredients": [
+    { "name": "ingredient name", "aisle": "Produce" },
+    { "name": "another ingredient", "aisle": "Pantry" }
+  ],
+  "steps": ["optional step 1", "optional step 2"]
+}
+If you cannot determine steps, omit "steps" or use an empty array. Every ingredient must have "name" and "aisle".`;
+
+/** Call Gemini API with YouTube video URL (actual video analysis, not thumbnail). Returns ingredients with aisle and optional steps. */
+async function getRecipeFromYouTubeVideoWithGemini(
+  youtubeUrl: string,
+  apiKey: string
+): Promise<{ ingredients: { name: string; aisle: string }[]; steps: string[] }> {
+  if (!apiKey) return { ingredients: [], steps: [] };
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [
+      {
+        parts: [
+          { text: VIDEO_PROMPT },
+          { file_data: { file_uri: youtubeUrl } },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 2048,
+      responseMimeType: "application/json",
+    },
+  };
+  const res = await fetch(apiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return { ingredients: [], steps: [] };
+  const data = (await res.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    error?: { message?: string };
+  };
+  if (data.error?.message) return { ingredients: [], steps: [] };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  if (!text) return { ingredients: [], steps: [] };
+  const cleaned = text
+    .replace(/^[\s\S]*?\{/, "{")
+    .replace(/\}[\s\S]*$/, "}")
+    .trim();
+  try {
+    const parsed = JSON.parse(cleaned) as {
+      ingredients?: Array<{ name?: string; aisle?: string }>;
+      steps?: string[];
+    };
+    const ingredients = (parsed.ingredients ?? [])
+      .filter(
+        (x): x is { name: string; aisle: string } =>
+          x != null &&
+          typeof x.name === "string" &&
+          typeof x.aisle === "string"
+      )
+      .map((x) => ({
+        name: String(x.name).trim(),
+        aisle: AISLES.includes(x.aisle as (typeof AISLES)[number])
+          ? x.aisle
+          : "Other",
+      }))
+      .filter((x) => x.name.length > 0);
+    const steps = Array.isArray(parsed.steps)
+      ? parsed.steps.filter((s): s is string => typeof s === "string").slice(0, 30)
+      : [];
+    return { ingredients, steps };
+  } catch {
+    return { ingredients: [], steps: [] };
+  }
+}
+
+/** Call Gemini multimodal API: image + optional text. Returns ingredients with aisle and optional steps. */
+async function getRecipeFromImageWithGemini(
+  base64Image: string,
+  mimeType: string,
+  apiKey: string,
+  optionalText?: string
+): Promise<{ ingredients: { name: string; aisle: string }[]; steps: string[] }> {
+  if (!apiKey) return { ingredients: [], steps: [] };
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
+  const parts: unknown[] = [
+    {
+      inline_data: {
+        mime_type: mimeType,
+        data: base64Image,
+      },
+    },
+    { text: VISION_PROMPT },
+  ];
+  if (optionalText && optionalText.trim()) {
+    parts.splice(1, 0, {
+      text: `Optional context from the page:\n${optionalText.slice(0, 1500)}\n\n`,
+    });
+  }
+  const body = {
+    contents: [{ parts }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 2048,
+      responseMimeType: "application/json",
+    },
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return { ingredients: [], steps: [] };
+  const data = (await res.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  if (!text) return { ingredients: [], steps: [] };
+  const cleaned = text
+    .replace(/^[\s\S]*?\{/, "{")
+    .replace(/\}[\s\S]*$/, "}")
+    .trim();
+  try {
+    const parsed = JSON.parse(cleaned) as {
+      ingredients?: Array<{ name?: string; aisle?: string }>;
+      steps?: string[];
+    };
+    const ingredients = (parsed.ingredients ?? [])
+      .filter(
+        (x): x is { name: string; aisle: string } =>
+          x != null &&
+          typeof x.name === "string" &&
+          typeof x.aisle === "string"
+      )
+      .map((x) => ({
+        name: String(x.name).trim(),
+        aisle: AISLES.includes(x.aisle as (typeof AISLES)[number])
+          ? x.aisle
+          : "Other",
+      }))
+      .filter((x) => x.name.length > 0);
+    const steps = Array.isArray(parsed.steps)
+      ? parsed.steps.filter((s): s is string => typeof s === "string").slice(0, 30)
+      : [];
+    return { ingredients, steps };
+  } catch {
+    return { ingredients: [], steps: [] };
+  }
+}
+
+/** Build groceryByAisle from ingredients with aisle, ordered by AISLES. */
+function buildGroceryByAisle(
+  items: { name: string; aisle: string }[]
+): GroceryByAisle[] {
+  const byAisle = new Map<string, string[]>();
+  for (const a of AISLES) byAisle.set(a, []);
+  const seen = new Set<string>();
+  for (const { name, aisle } of items) {
+    const key = name.toLowerCase().trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const a = AISLES.includes(aisle as (typeof AISLES)[number]) ? aisle : "Other";
+    const list = byAisle.get(a) ?? [];
+    list.push(name);
+    byAisle.set(a, list);
+  }
+  return AISLES.map((aisle) => ({
+    aisle,
+    items: byAisle.get(aisle) ?? [],
+  })).filter((g) => g.items.length > 0);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -337,37 +386,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "Missing or invalid url" });
   }
 
-  const youtubeApiKey = process.env.YOUTUBE_API_KEY ?? "";
-  const videoId = getYouTubeVideoId(url);
-
-  if (videoId) {
-    try {
-      if (youtubeApiKey) {
-        const recipe = await fetchYouTubeRecipe(videoId, youtubeApiKey);
-        if (
-          recipe &&
-          (recipe.ingredients.length > 0 || recipe.steps.length > 0)
-        ) {
-          return res.status(200).json(recipe);
-        }
-      }
-      const fromTranscript = await fetchYouTubeRecipeFromTranscript(videoId);
-      if (fromTranscript && fromTranscript.ingredients.length > 0) {
-        return res.status(200).json(fromTranscript);
-      }
-    } catch {
-      // fall through to generic fetch
-    }
-  }
+  const isVideo = isVideoOrSocialUrl(url);
+  const geminiKey = process.env.GEMINI_API_KEY ?? "";
 
   try {
     const response = await fetch(url, {
-      headers: { "User-Agent": "RecipeParser/1.0" },
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; RecipeParser/1.0)" },
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const html = await response.text();
-    const recipe = extractFromHtml(html);
-    return res.status(200).json(recipe);
+    const recipe = extractFromHtml(html, isVideo);
+    const ogDescription = extractOgDescription(html);
+
+    // For YouTube URLs: Gemini can analyze the actual video (audio + frames). Try that first.
+    if (geminiKey && isYouTubeUrl(url)) {
+      const fromVideo = await getRecipeFromYouTubeVideoWithGemini(url, geminiKey);
+      if (fromVideo.ingredients.length > 0) {
+        const ingredients = fromVideo.ingredients.map((x) => x.name);
+        const groceryByAisle = buildGroceryByAisle(fromVideo.ingredients);
+        const responsePayload: ParseResponse = {
+          title: recipe.title,
+          imageUrl: recipe.imageUrl,
+          ingredients,
+          steps: fromVideo.steps.length > 0 ? fromVideo.steps : recipe.steps,
+          servings: recipe.servings,
+          groceryByAisle,
+        };
+        return res.status(200).json(responsePayload);
+      }
+    }
+
+    // For other video/social URLs or when YouTube video analysis failed: use preview image (thumbnail).
+    const shouldUseVision =
+      geminiKey &&
+      recipe.imageUrl &&
+      recipe.imageUrl.startsWith("http") &&
+      (isVideo || recipe.ingredients.length < 5);
+
+    if (shouldUseVision) {
+      const base64 = await fetchImageAsBase64(recipe.imageUrl!);
+      if (base64) {
+        const { ingredients: aiIngredients, steps: aiSteps } =
+          await getRecipeFromImageWithGemini(
+            base64,
+            "image/jpeg",
+            geminiKey,
+            ogDescription
+          );
+        if (aiIngredients.length > 0) {
+          const ingredients = aiIngredients.map((x) => x.name);
+          const groceryByAisle = buildGroceryByAisle(aiIngredients);
+          const responsePayload: ParseResponse = {
+            title: recipe.title,
+            imageUrl: recipe.imageUrl,
+            ingredients,
+            steps: aiSteps.length > 0 ? aiSteps : recipe.steps,
+            servings: recipe.servings,
+            groceryByAisle,
+          };
+          return res.status(200).json(responsePayload);
+        }
+      }
+    }
+
+    // No vision or vision returned nothing: return HTML-extracted recipe; add empty groceryByAisle if desired.
+    const responsePayload: ParseResponse = {
+      ...recipe,
+      groceryByAisle: [],
+    };
+    return res.status(200).json(responsePayload);
   } catch (e) {
     return res
       .status(500)

@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   getCategoryForIngredient,
   GROCERY_CATEGORY_ORDER,
 } from "@/lib/groceryCategories";
 import type { GroceryList, GroceryItem } from "@/types";
+
+export const groceryListQueryKey = (userId: string | undefined) =>
+  userId ? ["grocery", userId] : ["grocery", null];
 
 function mapRow(r: {
   id: string;
@@ -23,32 +27,28 @@ function mapRow(r: {
   };
 }
 
+async function fetchGroceryList(userId: string): Promise<GroceryList | null> {
+  const { data, error } = await supabase
+    .from("grocery_lists")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return mapRow(data);
+}
+
 export function useGroceryList(userId: string | undefined) {
-  const [list, setList] = useState<GroceryList | null>(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: groceryListQueryKey(userId),
+    queryFn: () => fetchGroceryList(userId!),
+    enabled: !!userId,
+  });
 
   useEffect(() => {
-    if (!userId) {
-      setList(null);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    supabase
-      .from("grocery_lists")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .then(({ data, error }) => {
-        if (error || !data?.length) {
-          setList(null);
-        } else {
-          setList(mapRow(data[0]));
-        }
-        setLoading(false);
-      });
-
+    if (!userId) return;
     const sub = supabase
       .channel("grocery")
       .on(
@@ -60,36 +60,39 @@ export function useGroceryList(userId: string | undefined) {
           filter: `user_id=eq.${userId}`,
         },
         () => {
-          supabase
-            .from("grocery_lists")
-            .select("*")
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .then(({ data }) => {
-              if (data?.length) setList(mapRow(data[0]));
-            });
+          queryClient.invalidateQueries({
+            queryKey: groceryListQueryKey(userId),
+          });
         }
       )
       .subscribe();
-
     return () => {
       supabase.removeChannel(sub);
     };
-  }, [userId]);
+  }, [userId, queryClient]);
 
-  return { list, loading };
+  return {
+    list: data ?? null,
+    loading: isLoading,
+    refetch,
+  };
 }
 
 function generateId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function ingredientToItem(name: string): GroceryItem {
+function ingredientToItem(
+  name: string,
+  categoryOverride?: Record<string, string>
+): GroceryItem {
+  const key = name.trim().toLowerCase();
+  const category =
+    categoryOverride?.[key] ?? getCategoryForIngredient(name);
   return {
     id: generateId(),
     name: name.trim(),
-    category: getCategoryForIngredient(name),
+    category,
     checked: false,
   };
 }
@@ -108,12 +111,18 @@ export function itemsByCategory(
   return byCat;
 }
 
+/** Optional: map ingredient name (lowercase) to aisle/category from parse API. */
+export type CategoryByIngredient = Record<string, string>;
+
 export async function createOrUpdateGroceryList(
   userId: string,
   ingredients: string[],
-  recipeId?: string | null
+  recipeId?: string | null,
+  categoryByIngredient?: CategoryByIngredient
 ): Promise<{ list: GroceryList | null; error: string | null }> {
-  const newItems = ingredients.map(ingredientToItem);
+  const newItems = ingredients.map((name) =>
+    ingredientToItem(name, categoryByIngredient)
+  );
   const { data: existing, error: fetchError } = await supabase
     .from("grocery_lists")
     .select("*")

@@ -4,6 +4,7 @@ import {
   DefaultTheme,
   ThemeProvider,
 } from "@react-navigation/native";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -35,6 +36,14 @@ function RootLayoutNav() {
           options={{ presentation: "modal", title: "Paste recipe link" }}
         />
         <Stack.Screen
+          name="videos-to-list"
+          options={{ headerShown: true, title: "Videos to grocery list" }}
+        />
+        <Stack.Screen
+          name="identify-ingredients"
+          options={{ headerShown: true, title: "Identify ingredients from photo or video" }}
+        />
+        <Stack.Screen
           name="paywall"
           options={{ presentation: "modal", title: "Unlock" }}
         />
@@ -48,10 +57,18 @@ function RootLayoutNav() {
   );
 }
 
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 30 * 1000 },
+  },
+});
+
 function Providers({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   return (
-    <SubscriptionProvider userId={user?.id}>{children}</SubscriptionProvider>
+    <QueryClientProvider client={queryClient}>
+      <SubscriptionProvider userId={user?.id}>{children}</SubscriptionProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -66,7 +83,11 @@ export default function RootLayout() {
   }, [error]);
 
   useEffect(() => {
-    if (loaded) SplashScreen.hideAsync();
+    if (loaded) {
+      SplashScreen.hideAsync().catch(() => {
+        // Ignore when native splash isn't registered (e.g. web, some dev flows)
+      });
+    }
   }, [loaded]);
 
   if (!loaded) return null;

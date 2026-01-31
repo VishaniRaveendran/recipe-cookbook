@@ -1,19 +1,20 @@
-import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { Link, Tabs } from "expo-router";
 import { Pressable } from "react-native";
+import {
+  BookOpen,
+  BookMarked,
+  List,
+  User,
+  Settings,
+  Package,
+} from "lucide-react-native";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
-
-function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>["name"];
-  color: string;
-}) {
-  return <FontAwesome size={26} style={{ marginBottom: -2 }} {...props} />;
-}
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const tint = Colors[colorScheme ?? "light"].tint;
+  const textColor = Colors[colorScheme ?? "light"].text;
 
   return (
     <Tabs
@@ -26,17 +27,24 @@ export default function TabLayout() {
         name="index"
         options={{
           title: "Recipes",
-          tabBarIcon: ({ color }) => <TabBarIcon name="book" color={color} />,
+          tabBarIcon: ({ color }) => (
+            <BookOpen size={24} color={color} style={{ marginBottom: -2 }} />
+          ),
           headerRight: () => (
             <Link href="/settings" asChild>
               <Pressable style={{ marginRight: 16 }}>
-                <FontAwesome
-                  name="cog"
-                  size={22}
-                  color={Colors[colorScheme ?? "light"].text}
-                />
+                <Settings size={22} color={textColor} />
               </Pressable>
             </Link>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="cookbook"
+        options={{
+          title: "Cookbook",
+          tabBarIcon: ({ color }) => (
+            <BookMarked size={24} color={color} style={{ marginBottom: -2 }} />
           ),
         }}
       />
@@ -44,7 +52,27 @@ export default function TabLayout() {
         name="list"
         options={{
           title: "Grocery List",
-          tabBarIcon: ({ color }) => <TabBarIcon name="list" color={color} />,
+          tabBarIcon: ({ color }) => (
+            <List size={24} color={color} style={{ marginBottom: -2 }} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="fridge"
+        options={{
+          title: "My Kitchen",
+          tabBarIcon: ({ color }) => (
+            <Package size={24} color={color} style={{ marginBottom: -2 }} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color }) => (
+            <User size={24} color={color} style={{ marginBottom: -2 }} />
+          ),
         }}
       />
     </Tabs>

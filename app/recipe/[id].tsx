@@ -1,20 +1,36 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { StyleSheet, Pressable, ScrollView, Image, Alert } from "react-native";
+import {
+  activateKeepAwake,
+  deactivateKeepAwake,
+} from "expo-keep-awake";
+import { CheckSquare, Square } from "lucide-react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { useRecipes } from "@/hooks/useRecipes";
-import { createOrUpdateGroceryList } from "@/hooks/useGroceryList";
+import {
+  useRecipes,
+  recipesQueryKey,
+} from "@/hooks/useRecipes";
+import {
+  createOrUpdateGroceryList,
+  groceryListQueryKey,
+} from "@/hooks/useGroceryList";
 import { markCooked } from "@/hooks/useRecipes";
 import {
   canUseCookTonight,
   incrementCookTonightUsage,
 } from "@/lib/cookTonightUsage";
+import { scaleIngredientAmounts } from "@/lib/scaleIngredients";
+import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/Colors";
 import { Text, View } from "@/components/Themed";
 
 export default function RecipeDetailScreen() {
   const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { user } = useAuth();
   const { isPremium } = useSubscription();
   const { recipes, loading } = useRecipes(user?.id);
@@ -22,13 +38,29 @@ export default function RecipeDetailScreen() {
   const [cookTonightAllowed, setCookTonightAllowed] = useState<boolean | null>(
     null
   );
+  const [groceryScale, setGroceryScale] = useState<1 | 2 | 4>(1);
+  const [stepChecked, setStepChecked] = useState<Record<number, boolean>>({});
 
   const recipe = recipes.find((r) => r.id === id);
   const isCookingMode = mode === "cooking";
+  const colorScheme = useColorScheme();
+  const primary = Colors[colorScheme ?? "light"].primary ?? Colors[colorScheme ?? "light"].tint;
+
+  const toggleStep = useCallback((i: number) => {
+    setStepChecked((prev) => ({ ...prev, [i]: !prev[i] }));
+  }, []);
 
   useEffect(() => {
     canUseCookTonight(isPremium).then(setCookTonightAllowed);
   }, [isPremium]);
+
+  useEffect(() => {
+    if (!isCookingMode) return;
+    activateKeepAwake();
+    return () => {
+      deactivateKeepAwake();
+    };
+  }, [isCookingMode]);
 
   if (loading && !recipe) {
     return (
@@ -52,15 +84,33 @@ export default function RecipeDetailScreen() {
           <Text style={styles.cookingTitle}>{recipe.title}</Text>
           <Text style={styles.cookingSubtitle}>Steps</Text>
           {recipe.steps.map((step, i) => (
-            <View key={i} style={styles.stepRow}>
-              <Text style={styles.stepNum}>{i + 1}</Text>
-              <Text style={styles.stepText}>{step}</Text>
-            </View>
+            <Pressable
+              key={i}
+              style={styles.stepRow}
+              onPress={() => toggleStep(i)}
+            >
+              <View style={styles.stepCheckbox}>
+                {stepChecked[i] ? (
+                  <CheckSquare size={28} color={primary} strokeWidth={2} />
+                ) : (
+                  <Square size={28} color={primary} strokeWidth={2} />
+                )}
+              </View>
+              <Text
+                style={[
+                  styles.stepText,
+                  stepChecked[i] && styles.stepTextChecked,
+                ]}
+              >
+                {step}
+              </Text>
+            </Pressable>
           ))}
           <Pressable
             style={({ pressed }) => [
               styles.doneCooking,
               pressed && styles.btnPressed,
+              { backgroundColor: primary },
             ]}
             onPress={() => router.back()}
           >
@@ -71,6 +121,11 @@ export default function RecipeDetailScreen() {
     );
   }
 
+  const scaledIngredients = scaleIngredientAmounts(
+    recipe.ingredients,
+    groceryScale
+  );
+
   const handleAddToGroceryList = async () => {
     if (!user?.id) {
       Alert.alert("Please wait", "Signing you in… Try again in a moment.");
@@ -78,13 +133,16 @@ export default function RecipeDetailScreen() {
     }
     const { error } = await createOrUpdateGroceryList(
       user.id,
-      recipe.ingredients,
+      scaledIngredients,
       recipe.id
     );
     if (error) {
       Alert.alert("Could not add to grocery list", error);
       return;
     }
+    queryClient.invalidateQueries({
+      queryKey: groceryListQueryKey(user?.id),
+    });
     router.push("/(tabs)/list");
   };
 
@@ -101,19 +159,27 @@ export default function RecipeDetailScreen() {
     if (!isPremium) await incrementCookTonightUsage();
     const { error } = await createOrUpdateGroceryList(
       user.id,
-      recipe.ingredients,
+      scaledIngredients,
       recipe.id
     );
     if (error) {
       Alert.alert("Could not add to grocery list", error);
       return;
     }
+    queryClient.invalidateQueries({
+      queryKey: groceryListQueryKey(user?.id),
+    });
     router.push("/(tabs)/list");
   };
 
   const handleCookedIt = async () => {
     const ok = await markCooked(recipe.id);
-    if (ok) setCookedJustNow(true);
+    if (ok) {
+      queryClient.invalidateQueries({
+        queryKey: recipesQueryKey(user?.id),
+      });
+      setCookedJustNow(true);
+    }
   };
 
   const handleStartCooking = () => {
@@ -155,11 +221,35 @@ export default function RecipeDetailScreen() {
         )}
 
         <View style={styles.actions}>
+          <Text style={styles.scaleLabel}>Servings for grocery list</Text>
+          <View style={styles.scaleRow}>
+            {([1, 2, 4] as const).map((s) => (
+              <Pressable
+                key={s}
+                style={[
+                  styles.scaleChip,
+                  groceryScale === s && { backgroundColor: primary },
+                ]}
+                onPress={() => setGroceryScale(s)}
+              >
+                <Text
+                  style={[
+                    styles.scaleChipText,
+                    groceryScale === s && styles.scaleChipTextActive,
+                    groceryScale === s && { color: "#fff" },
+                  ]}
+                >
+                  {s}x
+                </Text>
+              </Pressable>
+            ))}
+          </View>
           <Pressable
             style={({ pressed }) => [
               styles.btn,
               styles.btnPrimary,
               pressed && styles.btnPressed,
+              { backgroundColor: primary },
             ]}
             onPress={handleAddToGroceryList}
           >
@@ -170,20 +260,26 @@ export default function RecipeDetailScreen() {
               styles.btn,
               styles.btnSecondary,
               pressed && styles.btnPressed,
+              { borderColor: primary },
             ]}
             onPress={handleCookTonight}
           >
-            <Text style={styles.btnSecondaryText}>Cook Tonight</Text>
+            <Text style={[styles.btnSecondaryText, { color: primary }]}>
+              Cook Tonight
+            </Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
               styles.btn,
               styles.btnOutline,
               pressed && styles.btnPressed,
+              { borderColor: primary },
             ]}
             onPress={handleStartCooking}
           >
-            <Text style={styles.btnOutlineText}>Start Cooking</Text>
+            <Text style={[styles.btnOutlineText, { color: primary }]}>
+              Start Cooking
+            </Text>
           </Pressable>
           {!recipe.cookedAt && !cookedJustNow && (
             <Pressable
@@ -221,42 +317,50 @@ const styles = StyleSheet.create({
   ingredient: { fontSize: 16, lineHeight: 24, marginBottom: 4 },
   step: { fontSize: 16, lineHeight: 24, marginBottom: 8 },
   actions: { marginTop: 28, gap: 12 },
+  scaleLabel: { fontSize: 15, fontWeight: "600", marginBottom: 8 },
+  scaleRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
+  scaleChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "rgba(0,0,0,0.15)",
+  },
+  scaleChipText: { fontSize: 16, fontWeight: "600" },
+  scaleChipTextActive: {},
   btn: { paddingVertical: 16, borderRadius: 12, alignItems: "center" },
   btnPressed: { opacity: 0.8 },
-  btnPrimary: { backgroundColor: "#2f95dc" },
+  btnPrimary: {},
   btnPrimaryText: { color: "#fff", fontSize: 17, fontWeight: "600" },
-  btnSecondary: { backgroundColor: "rgba(47,149,220,0.2)" },
-  btnSecondaryText: { color: "#2f95dc", fontSize: 17, fontWeight: "600" },
-  btnOutline: { borderWidth: 2, borderColor: "#2f95dc" },
-  btnOutlineText: { color: "#2f95dc", fontSize: 17, fontWeight: "600" },
+  btnSecondary: { backgroundColor: "rgba(232,93,4,0.15)", borderWidth: 2 },
+  btnSecondaryText: { fontSize: 17, fontWeight: "600" },
+  btnOutline: { borderWidth: 2 },
+  btnOutlineText: { fontSize: 17, fontWeight: "600" },
   btnGhost: {},
   btnGhostText: { fontSize: 16, opacity: 0.8 },
-  cookingContent: { padding: 24, paddingBottom: 48 },
-  cookingTitle: { fontSize: 22, fontWeight: "700", marginBottom: 8 },
+  cookingContent: { padding: 24, paddingBottom: 48, maxWidth: 600 },
+  cookingTitle: { fontSize: 28, fontWeight: "700", marginBottom: 12 },
   cookingSubtitle: {
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: "600",
     opacity: 0.8,
-    marginTop: 16,
-    marginBottom: 12,
+    marginTop: 20,
+    marginBottom: 16,
   },
-  stepRow: { flexDirection: "row", marginBottom: 16, alignItems: "flex-start" },
-  stepNum: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "#2f95dc",
-    color: "#fff",
-    textAlign: "center",
-    lineHeight: 28,
-    fontWeight: "700",
-    marginRight: 12,
+  stepRow: {
+    flexDirection: "row",
+    marginBottom: 20,
+    alignItems: "flex-start",
   },
-  stepText: { flex: 1, fontSize: 16, lineHeight: 24 },
+  stepCheckbox: { marginRight: 12, marginTop: 2 },
+  stepText: { flex: 1, fontSize: 21, lineHeight: 30 },
+  stepTextChecked: {
+    textDecorationLine: "line-through",
+    opacity: 0.6,
+  },
   doneCooking: {
     marginTop: 32,
     paddingVertical: 16,
-    backgroundColor: "#2f95dc",
     borderRadius: 12,
     alignItems: "center",
   },

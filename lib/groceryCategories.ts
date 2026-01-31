@@ -101,8 +101,8 @@ export function getCategoryForIngredient(ingredient: string): GroceryCategory {
 export const GROCERY_CATEGORY_ORDER: GroceryCategory[] = [
   "Produce",
   "Dairy",
-  "Meat",
   "Pantry",
+  "Meat",
   "Bakery",
   "Frozen",
   "Other",

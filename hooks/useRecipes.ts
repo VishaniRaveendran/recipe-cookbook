@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Recipe } from "@/types";
+
+export const recipesQueryKey = (userId: string | undefined) =>
+  userId ? ["recipes", userId] : ["recipes", null];
 
 function mapRow(r: {
   id: string;
@@ -26,31 +30,26 @@ function mapRow(r: {
   };
 }
 
+async function fetchRecipes(userId: string): Promise<Recipe[]> {
+  const { data, error } = await supabase
+    .from("recipes")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) return [];
+  return (data ?? []).map(mapRow);
+}
+
 export function useRecipes(userId: string | undefined) {
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: recipesQueryKey(userId),
+    queryFn: () => fetchRecipes(userId!),
+    enabled: !!userId,
+  });
 
   useEffect(() => {
-    if (!userId) {
-      setRecipes([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    supabase
-      .from("recipes")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (error) {
-          setRecipes([]);
-        } else {
-          setRecipes((data ?? []).map(mapRow));
-        }
-        setLoading(false);
-      });
-
+    if (!userId) return;
     const sub = supabase
       .channel("recipes")
       .on(
@@ -62,22 +61,20 @@ export function useRecipes(userId: string | undefined) {
           filter: `user_id=eq.${userId}`,
         },
         () => {
-          supabase
-            .from("recipes")
-            .select("*")
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false })
-            .then(({ data }) => setRecipes((data ?? []).map(mapRow)));
+          queryClient.invalidateQueries({ queryKey: recipesQueryKey(userId) });
         }
       )
       .subscribe();
-
     return () => {
       supabase.removeChannel(sub);
     };
-  }, [userId]);
+  }, [userId, queryClient]);
 
-  return { recipes, loading };
+  return {
+    recipes: data ?? [],
+    loading: isLoading,
+    refetch,
+  };
 }
 
 export async function insertRecipe(

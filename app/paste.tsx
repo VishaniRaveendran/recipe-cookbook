@@ -1,5 +1,6 @@
 import { useRouter } from "expo-router";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   StyleSheet,
   Pressable,
@@ -9,45 +10,70 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { useAuth } from "@/context/AuthContext";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { useRecipes, insertRecipe } from "@/hooks/useRecipes";
-import { createOrUpdateGroceryList } from "@/hooks/useGroceryList";
+import { useRecipes, insertRecipe, recipesQueryKey } from "@/hooks/useRecipes";
+import {
+  createOrUpdateGroceryList,
+  groceryListQueryKey,
+  type CategoryByIngredient,
+} from "@/hooks/useGroceryList";
 import { parseRecipeFromUrl, parseManualIngredients } from "@/lib/recipeParser";
+import {
+  canUseSmartImporter,
+  incrementSmartImporterUsage,
+} from "@/lib/smartImporterUsage";
 import { FREE_RECIPE_LIMIT } from "@/constants/limits";
 import type { ParsedRecipe } from "@/types";
+import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/Colors";
 import { Text, View } from "@/components/Themed";
 
 export default function PasteScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { isPremium } = useSubscription();
+  const queryClient = useQueryClient();
+  const { isPremium, isPro, hasRecipePack } = useSubscription();
   const { recipes } = useRecipes(user?.id);
   const [url, setUrl] = useState("");
   const [parsed, setParsed] = useState<ParsedRecipe | null>(null);
   const [loading, setLoading] = useState(false);
   const [manualIngredients, setManualIngredients] = useState("");
+  const [manualTitle, setManualTitle] = useState("");
   const [showManual, setShowManual] = useState(false);
 
+  const colorScheme = useColorScheme();
+  const primary =
+    Colors[colorScheme ?? "light"].primary ??
+    Colors[colorScheme ?? "light"].tint;
   const atRecipeLimit = !isPremium && recipes.length >= FREE_RECIPE_LIMIT;
 
   const handleParse = async () => {
     const trimmed = url.trim();
     if (!trimmed) return;
+    const allowed = await canUseSmartImporter(isPro, hasRecipePack);
+    if (!allowed) {
+      router.push("/paywall");
+      return;
+    }
     setLoading(true);
     setParsed(null);
     try {
       const result = await parseRecipeFromUrl(trimmed);
       if (!result) {
         setShowManual(true);
+        setManualTitle("");
         setParsed({ title: "Untitled Recipe", ingredients: [], steps: [] });
         return;
       }
+      await incrementSmartImporterUsage();
       setParsed(result);
-      // When we couldn't extract ingredients (e.g. YouTube, Instagram), show manual entry
+      setManualTitle(result.title || "");
       setShowManual(result.ingredients.length === 0);
     } catch {
       setShowManual(true);
+      setManualTitle("");
       setParsed({ title: "Untitled Recipe", ingredients: [], steps: [] });
     } finally {
       setLoading(false);
@@ -71,15 +97,19 @@ export default function PasteScreen() {
       showManual && manualIngredients.trim()
         ? parseManualIngredients(manualIngredients)
         : parsed.ingredients;
-    if (ingredients.length === 0 && !parsed.title) {
-      Alert.alert("Add ingredients", "Add at least a title or ingredients.");
+    const titleToSave =
+      showManual && manualTitle.trim()
+        ? manualTitle.trim()
+        : parsed.title || "Untitled Recipe";
+    if (ingredients.length === 0 && !titleToSave.trim()) {
+      Alert.alert("Add a title or ingredients", "Add at least a title or ingredients, or save the link and add ingredients later.");
       return;
     }
     setLoading(true);
     try {
       const { recipe, error: recipeError } = await insertRecipe(user.id, {
         sourceUrl: url.trim() || "manual",
-        title: parsed.title || "Untitled Recipe",
+        title: titleToSave,
         imageUrl: parsed.imageUrl,
         ingredients,
         steps: parsed.steps,
@@ -89,14 +119,29 @@ export default function PasteScreen() {
         return;
       }
       if (!recipe) return;
+      queryClient.invalidateQueries({ queryKey: recipesQueryKey(user.id) });
+      const categoryByIngredient: CategoryByIngredient | undefined =
+        parsed.groceryByAisle?.length
+          ? (() => {
+              const m: Record<string, string> = {};
+              for (const g of parsed.groceryByAisle)
+                for (const name of g.items)
+                  m[name.trim().toLowerCase()] = g.aisle;
+              return m;
+            })()
+          : undefined;
       const { error: listError } = await createOrUpdateGroceryList(
         user.id,
         ingredients,
-        recipe.id
+        recipe.id,
+        categoryByIngredient
       );
       if (listError) {
         Alert.alert("Recipe saved, but grocery list failed", listError);
       }
+      queryClient.invalidateQueries({
+        queryKey: groceryListQueryKey(user.id),
+      });
       router.back();
       router.push("/(tabs)/list");
     } catch (e) {
@@ -126,11 +171,15 @@ export default function PasteScreen() {
       showManual && manualIngredients.trim()
         ? parseManualIngredients(manualIngredients)
         : parsed.ingredients;
+    const titleToSave =
+      showManual && manualTitle.trim()
+        ? manualTitle.trim()
+        : parsed.title || "Untitled Recipe";
     setLoading(true);
     try {
       const { recipe, error: recipeError } = await insertRecipe(user.id, {
         sourceUrl: url.trim() || "manual",
-        title: parsed.title || "Untitled Recipe",
+        title: titleToSave,
         imageUrl: parsed.imageUrl,
         ingredients,
         steps: parsed.steps,
@@ -140,6 +189,7 @@ export default function PasteScreen() {
         return;
       }
       if (recipe) {
+        queryClient.invalidateQueries({ queryKey: recipesQueryKey(user.id) });
         router.back();
         router.push(`/recipe/${recipe.id}`);
       }
@@ -153,12 +203,26 @@ export default function PasteScreen() {
     }
   };
 
+  const handlePasteFromClipboard = async () => {
+    try {
+      const text = await Clipboard.getStringAsync();
+      if (text?.trim()) {
+        const lines = parseManualIngredients(text);
+        setManualIngredients(lines.join("\n"));
+      } else {
+        Alert.alert("Clipboard empty", "Copy ingredients from the video or another app, then tap Paste from clipboard.");
+      }
+    } catch {
+      Alert.alert("Could not read clipboard", "Make sure the app has permission to access the clipboard.");
+    }
+  };
+
   return (
     <View style={styles.container}>
-      <Text style={styles.label}>Paste any recipe link</Text>
+      <Text style={styles.label}>Paste any recipe or video link</Text>
       <TextInput
         style={styles.input}
-        placeholder="Instagram, YouTube, or website URL"
+        placeholder="TikTok, Instagram, YouTube, or website URL"
         placeholderTextColor="#999"
         value={url}
         onChangeText={setUrl}
@@ -172,6 +236,7 @@ export default function PasteScreen() {
           styles.primary,
           loading && styles.disabled,
           pressed && styles.pressed,
+          { backgroundColor: primary },
         ]}
         onPress={handleParse}
         disabled={loading}
@@ -196,14 +261,36 @@ export default function PasteScreen() {
           ) : (
             <View style={styles.previewImagePlaceholder} />
           )}
-          <Text style={styles.previewTitle}>{parsed.title}</Text>
           {showManual ? (
             <>
+              <Text style={styles.sectionLabel}>Recipe name</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Chocolate Cake"
+                placeholderTextColor="#999"
+                value={manualTitle}
+                onChangeText={setManualTitle}
+                editable={!loading}
+              />
               <Text style={styles.manualHint}>
-                No ingredients were found. Paste the recipe name above and
-                ingredients below (from the video or page). For auto-extract,
-                set EXPO_PUBLIC_PARSER_API_URL in .env — see SETUP.md.
+                No ingredients were found. You can copy ingredients from the
+                video description or another app and paste them below. You can
+                also save the link now and add ingredients later.
               </Text>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.button,
+                  styles.secondary,
+                  pressed && styles.pressed,
+                  { borderColor: primary },
+                ]}
+                onPress={handlePasteFromClipboard}
+                disabled={loading}
+              >
+                <Text style={[styles.secondaryText, { color: primary }]}>
+                  Paste from clipboard
+                </Text>
+              </Pressable>
               <Text style={styles.sectionLabel}>
                 Ingredients (one per line)
               </Text>
@@ -217,8 +304,26 @@ export default function PasteScreen() {
                 numberOfLines={6}
               />
             </>
+          ) : parsed.groceryByAisle?.length ? (
+            <>
+              <Text style={styles.previewTitle}>{parsed.title}</Text>
+              <Text style={styles.sectionLabel}>
+                Grocery list (by supermarket aisle)
+              </Text>
+              {parsed.groceryByAisle.map((g) => (
+                <View key={g.aisle} style={styles.aisleBlock}>
+                  <Text style={styles.aisleTitle}>{g.aisle}</Text>
+                  {g.items.map((ing, i) => (
+                    <Text key={`${g.aisle}-${i}`} style={styles.ingredient}>
+                      • {ing}
+                    </Text>
+                  ))}
+                </View>
+              ))}
+            </>
           ) : (
             <>
+              <Text style={styles.previewTitle}>{parsed.title}</Text>
               <Text style={styles.sectionLabel}>Ingredients</Text>
               {parsed.ingredients.map((ing, i) => (
                 <Text key={i} style={styles.ingredient}>
@@ -233,6 +338,7 @@ export default function PasteScreen() {
               styles.primary,
               loading && styles.disabled,
               pressed && styles.pressed,
+              { backgroundColor: primary },
             ]}
             onPress={handleSaveAndAddToList}
             disabled={loading}
@@ -244,11 +350,14 @@ export default function PasteScreen() {
               styles.button,
               styles.secondary,
               pressed && styles.pressed,
+              { borderColor: primary },
             ]}
             onPress={handleSaveOnly}
             disabled={loading}
           >
-            <Text style={styles.secondaryText}>Save recipe only</Text>
+            <Text style={[styles.secondaryText, { color: primary }]}>
+              Save recipe only
+            </Text>
           </Pressable>
         </ScrollView>
       )}
@@ -273,14 +382,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 12,
   },
-  primary: { backgroundColor: "#2f95dc" },
+  primary: {},
   primaryText: { color: "#fff", fontSize: 17, fontWeight: "600" },
   secondary: {
     backgroundColor: "transparent",
     borderWidth: 2,
-    borderColor: "#2f95dc",
   },
-  secondaryText: { color: "#2f95dc", fontSize: 17, fontWeight: "600" },
+  secondaryText: { fontSize: 17, fontWeight: "600" },
   disabled: { opacity: 0.6 },
   pressed: { opacity: 0.8 },
   preview: { flex: 1, marginTop: 20 },
@@ -307,6 +415,13 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   sectionLabel: { fontSize: 15, fontWeight: "600", marginBottom: 8 },
+  aisleBlock: { marginBottom: 16 },
+  aisleTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 6,
+    textTransform: "capitalize",
+  },
   textArea: {
     borderWidth: 1,
     borderColor: "#ccc",

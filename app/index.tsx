@@ -3,12 +3,16 @@ import { useEffect } from "react";
 import { StyleSheet, Pressable } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/Colors";
 import { Text, View } from "@/components/Themed";
 
 const ONBOARDING_SEEN = "onboarding_seen";
 
 export default function OnboardingScreen() {
   const router = useRouter();
+  const colorScheme = useColorScheme();
+  const primary = Colors[colorScheme ?? "light"].primary ?? Colors[colorScheme ?? "light"].tint;
 
   useEffect(() => {
     AsyncStorage.getItem(ONBOARDING_SEEN).then((seen) => {
@@ -36,6 +40,7 @@ export default function OnboardingScreen() {
         style={({ pressed }) => [
           styles.button,
           pressed && styles.buttonPressed,
+          { backgroundColor: primary },
         ]}
         onPress={handleContinue}
       >
@@ -66,7 +71,6 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   button: {
-    backgroundColor: "#2f95dc",
     paddingHorizontal: 32,
     paddingVertical: 16,
     borderRadius: 12,
