@@ -29,11 +29,28 @@ interface ParseResponse extends ParsedRecipe {
   groceryByAisle?: GroceryByAisle[];
 }
 
+/** Extract og:title from HTML (YouTube and others often set this with the real video/page title). */
+function extractOgTitle(html: string): string | undefined {
+  const m =
+    html.match(
+      /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:title["']/i
+    );
+  if (!m || !m[1]) return undefined;
+  return m[1].trim().replace(/&[^;]+;/g, " ").slice(0, 300) || undefined;
+}
+
 function extractFromHtml(html: string, isVideoOrSocialUrl: boolean): ParsedRecipe {
   const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  const title = titleMatch
+  let title = titleMatch
     ? titleMatch[1].trim().replace(/&[^;]+;/g, " ")
     : "Untitled Recipe";
+  const ogTitle = extractOgTitle(html);
+  if (ogTitle && (title === "- YouTube" || title === "YouTube" || title.length < 3)) {
+    title = ogTitle;
+  }
 
   const ogImageMatch =
     html.match(
@@ -236,12 +253,18 @@ async function getRecipeFromYouTubeVideoWithGemini(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) return { ingredients: [], steps: [] };
   const data = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    error?: { message?: string };
+    error?: { message?: string; code?: number };
   };
-  if (data.error?.message) return { ingredients: [], steps: [] };
+  if (!res.ok) {
+    console.error("[parse] Gemini YouTube video error:", res.status, data.error?.message ?? (data as { error?: { message?: string } }).error);
+    return { ingredients: [], steps: [] };
+  }
+  if (data.error?.message) {
+    console.error("[parse] Gemini YouTube video API error:", data.error.message);
+    return { ingredients: [], steps: [] };
+  }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
   if (!text) return { ingredients: [], steps: [] };
   const cleaned = text
