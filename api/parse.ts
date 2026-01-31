@@ -140,6 +140,32 @@ function extractOgDescription(html: string): string | undefined {
   return raw || undefined;
 }
 
+/** Extract og:video or og:video:url or og:video:secure_url for Instagram/TikTok etc. (full video analysis). */
+function extractOgVideoUrl(html: string): string | undefined {
+  const m =
+    html.match(
+      /<meta[^>]*property=["']og:video:secure_url["'][^>]*content=["']([^"']+)["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video:secure_url["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*property=["']og:video:url["'][^>]*content=["']([^"']+)["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video:url["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*property=["']og:video["'][^>]*content=["']([^"']+)["']/i
+    ) ??
+    html.match(
+      /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video["']/i
+    );
+  if (!m || !m[1]) return undefined;
+  const url = m[1].trim();
+  return url.startsWith("http") ? url : undefined;
+}
+
 function setCors(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -187,6 +213,9 @@ const BROWSER_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
+/** Max size for inline video sent to Gemini (20MB). */
+const MAX_INLINE_VIDEO_BYTES = 20 * 1024 * 1024;
+
 /** Fetch image from URL and return base64 string. */
 async function fetchImageAsBase64(imageUrl: string): Promise<string | null> {
   try {
@@ -197,6 +226,46 @@ async function fetchImageAsBase64(imageUrl: string): Promise<string | null> {
     const buf = await res.arrayBuffer();
     const base64 = Buffer.from(buf).toString("base64");
     return base64 || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fetch video from URL (e.g. og:video from Instagram/TikTok). Returns base64 + mimeType or null. Aborts if larger than maxBytes. */
+async function fetchVideoAsBase64(
+  videoUrl: string,
+  pageUrl: string,
+  maxBytes: number
+): Promise<{ base64: string; mimeType: string } | null> {
+  try {
+    const res = await fetch(videoUrl, {
+      headers: {
+        ...BROWSER_HEADERS,
+        Referer: pageUrl,
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok || !res.body) return null;
+    const contentType = res.headers.get("content-type") ?? "";
+    const mimeType = contentType.includes("video/")
+      ? contentType.split(";")[0].trim()
+      : "video/mp4";
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) {
+        reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    const buf = Buffer.concat(chunks);
+    const base64 = buf.toString("base64");
+    return base64 ? { base64, mimeType } : null;
   } catch {
     return null;
   }
@@ -307,6 +376,39 @@ function categorizeIngredientToAisle(name: string): string {
   return "Other";
 }
 
+/** Parse Gemini video recipe JSON from response text. */
+function parseVideoRecipeJson(text: string, logPrefix: string): VideoRecipeParsed | null {
+  let cleaned = text
+    .replace(/^[\s\S]*?```(?:json)?\s*/i, "")
+    .replace(/\s*```[\s\S]*$/i, "")
+    .trim();
+  const firstBrace = cleaned.indexOf("{");
+  if (firstBrace === -1) {
+    console.error("[parse]", logPrefix, "no JSON object in response");
+    return null;
+  }
+  let depth = 0;
+  let end = -1;
+  for (let i = firstBrace; i < cleaned.length; i++) {
+    if (cleaned[i] === "{") depth++;
+    else if (cleaned[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end === -1) end = cleaned.length;
+  cleaned = cleaned.slice(firstBrace, end + 1);
+  try {
+    return JSON.parse(cleaned) as VideoRecipeParsed;
+  } catch (parseErr) {
+    console.error("[parse]", logPrefix, "JSON parse failed", parseErr);
+    return null;
+  }
+}
+
 /** Call Gemini API with YouTube video URL (actual video analysis). Returns full recipe in new format. */
 async function getRecipeFromYouTubeVideoWithGemini(
   youtubeUrl: string,
@@ -314,7 +416,6 @@ async function getRecipeFromYouTubeVideoWithGemini(
 ): Promise<VideoRecipeParsed | null> {
   if (!apiKey) return null;
   const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  // Gemini docs: place video part FIRST, then text prompt.
   const body = {
     contents: [
       {
@@ -352,37 +453,55 @@ async function getRecipeFromYouTubeVideoWithGemini(
     console.error("[parse] Gemini YouTube: empty response text. finishReason:", (data.candidates?.[0] as { finishReason?: string })?.finishReason);
     return null;
   }
-  // Robust JSON extraction: strip markdown code blocks, then find outermost { }
-  let cleaned = text
-    .replace(/^[\s\S]*?```(?:json)?\s*/i, "")
-    .replace(/\s*```[\s\S]*$/i, "")
-    .trim();
-  const firstBrace = cleaned.indexOf("{");
-  if (firstBrace === -1) {
-    console.error("[parse] Gemini YouTube: no JSON object in response");
+  return parseVideoRecipeJson(text, "Gemini YouTube:");
+}
+
+/** Call Gemini API with inline video data (e.g. fetched from Instagram/TikTok og:video). Video must be &lt;20MB. */
+async function getRecipeFromVideoInlineWithGemini(
+  videoBase64: string,
+  mimeType: string,
+  apiKey: string
+): Promise<VideoRecipeParsed | null> {
+  if (!apiKey) return null;
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [
+      {
+        parts: [
+          { inline_data: { mime_type: mimeType, data: videoBase64 } },
+          { text: VIDEO_PROMPT },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+      responseMimeType: "application/json",
+    },
+  };
+  const res = await fetch(apiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    error?: { message?: string; code?: number };
+  };
+  if (!res.ok) {
+    console.error("[parse] Gemini inline video error:", res.status, data.error?.message ?? (data as { error?: { message?: string } }).error);
     return null;
   }
-  let depth = 0;
-  let end = -1;
-  for (let i = firstBrace; i < cleaned.length; i++) {
-    if (cleaned[i] === "{") depth++;
-    else if (cleaned[i] === "}") {
-      depth--;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
-  if (end === -1) end = cleaned.length;
-  cleaned = cleaned.slice(firstBrace, end + 1);
-  try {
-    const parsed = JSON.parse(cleaned) as VideoRecipeParsed;
-    return parsed;
-  } catch (parseErr) {
-    console.error("[parse] Gemini YouTube: JSON parse failed", parseErr);
+  if (data.error?.message) {
+    console.error("[parse] Gemini inline video API error:", data.error.message);
     return null;
   }
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  if (!text) {
+    console.error("[parse] Gemini inline video: empty response. finishReason:", (data.candidates?.[0] as { finishReason?: string })?.finishReason);
+    return null;
+  }
+  return parseVideoRecipeJson(text, "Gemini inline video:");
 }
 
 /** Map VideoRecipeParsed to ingredients string[], steps, servings. Returns flat ingredients list only (no aisle grouping). */
@@ -587,7 +706,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Fallback: use preview image (thumbnail) for video/social URLs or when YouTube video path failed.
+    // For Instagram/TikTok etc.: try og:video URL — fetch video and send as inline data to Gemini (full video analysis).
+    if (geminiKey && isVideo && !isYouTubeUrl(url)) {
+      const ogVideoUrl = extractOgVideoUrl(html);
+      if (ogVideoUrl) {
+        const videoData = await fetchVideoAsBase64(ogVideoUrl, url, MAX_INLINE_VIDEO_BYTES);
+        if (videoData) {
+          const fromVideo = await getRecipeFromVideoInlineWithGemini(
+            videoData.base64,
+            videoData.mimeType,
+            geminiKey
+          );
+          if (fromVideo && (fromVideo.ingredients?.length ?? 0) > 0) {
+            const responsePayload = mapVideoRecipeToResponse(
+              fromVideo,
+              recipe.title,
+              recipe.imageUrl
+            );
+            return res.status(200).json(responsePayload);
+          }
+          if (fromVideo && (fromVideo.ingredients?.length ?? 0) === 0) {
+            console.error("[parse] Instagram/TikTok video analysis returned empty ingredients.");
+          } else if (!fromVideo) {
+            console.error("[parse] Instagram/TikTok video analysis returned null.");
+          }
+        } else {
+          console.error("[parse] Could not fetch og:video from", ogVideoUrl.slice(0, 60), "(may be blocked or >20MB).");
+        }
+      }
+    }
+
+    // Fallback: use preview image (thumbnail) for video/social URLs or when video path failed.
     const shouldUseVision =
       geminiKey &&
       recipe.imageUrl &&
