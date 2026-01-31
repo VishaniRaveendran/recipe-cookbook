@@ -305,12 +305,13 @@ async function getRecipeFromYouTubeVideoWithGemini(
 ): Promise<VideoRecipeParsed | null> {
   if (!apiKey) return null;
   const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  // Gemini docs: place video part FIRST, then text prompt.
   const body = {
     contents: [
       {
         parts: [
-          { text: VIDEO_PROMPT },
           { file_data: { file_uri: youtubeUrl } },
+          { text: VIDEO_PROMPT },
         ],
       },
     ],
@@ -338,15 +339,39 @@ async function getRecipeFromYouTubeVideoWithGemini(
     return null;
   }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-  if (!text) return null;
-  const cleaned = text
-    .replace(/^[\s\S]*?\{/, "{")
-    .replace(/\}[\s\S]*$/, "}")
+  if (!text) {
+    console.error("[parse] Gemini YouTube: empty response text. finishReason:", (data.candidates?.[0] as { finishReason?: string })?.finishReason);
+    return null;
+  }
+  // Robust JSON extraction: strip markdown code blocks, then find outermost { }
+  let cleaned = text
+    .replace(/^[\s\S]*?```(?:json)?\s*/i, "")
+    .replace(/\s*```[\s\S]*$/i, "")
     .trim();
+  const firstBrace = cleaned.indexOf("{");
+  if (firstBrace === -1) {
+    console.error("[parse] Gemini YouTube: no JSON object in response");
+    return null;
+  }
+  let depth = 0;
+  let end = -1;
+  for (let i = firstBrace; i < cleaned.length; i++) {
+    if (cleaned[i] === "{") depth++;
+    else if (cleaned[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end === -1) end = cleaned.length;
+  cleaned = cleaned.slice(firstBrace, end + 1);
   try {
     const parsed = JSON.parse(cleaned) as VideoRecipeParsed;
     return parsed;
-  } catch {
+  } catch (parseErr) {
+    console.error("[parse] Gemini YouTube: JSON parse failed", parseErr);
     return null;
   }
 }
@@ -364,10 +389,16 @@ function mapVideoRecipeToResponse(
   for (const a of AISLES) byAisle.set(a, []);
   const seen = new Set<string>();
   for (const ing of ingredientsRaw) {
-    const name = ing?.name && String(ing.name).trim();
+    // Support { name }, { name, quantity }, { name, quantity, notes }, or string
+    const name =
+      typeof ing === "string"
+        ? String(ing).trim()
+        : ing?.name
+          ? String(ing.name).trim()
+          : "";
     if (!name) continue;
-    const quantity = ing?.quantity ? String(ing.quantity).trim() : "";
-    const notes = ing?.notes ? String(ing.notes).trim() : "";
+    const quantity = ing && typeof ing === "object" && ing.quantity ? String(ing.quantity).trim() : "";
+    const notes = ing && typeof ing === "object" && ing.notes ? String(ing.notes).trim() : "";
     const line = [quantity, name].filter(Boolean).join(" ") + (notes ? ` (${notes})` : "");
     ingredients.push(line);
     const key = name.toLowerCase();
@@ -383,9 +414,12 @@ function mapVideoRecipeToResponse(
     aisle,
     items: byAisle.get(aisle) ?? [],
   })).filter((g) => g.items.length > 0);
-  const steps = Array.isArray(parsed.instructions)
-    ? parsed.instructions.filter((s): s is string => typeof s === "string").slice(0, 50)
-    : [];
+  const steps =
+    Array.isArray(parsed.instructions)
+      ? parsed.instructions.filter((s): s is string => typeof s === "string").slice(0, 50)
+      : Array.isArray((parsed as { steps?: string[] }).steps)
+        ? (parsed as { steps: string[] }).steps.filter((s): s is string => typeof s === "string").slice(0, 50)
+        : [];
   const servingsMatch = parsed.servings && String(parsed.servings).match(/\d+/);
   const servings = servingsMatch ? parseInt(servingsMatch[0], 10) : 4;
   const response: ParseResponse = {
@@ -447,32 +481,38 @@ async function getRecipeFromImageWithGemini(
   };
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
   if (!text) return { ingredients: [], steps: [] };
-  const cleaned = text
-    .replace(/^[\s\S]*?\{/, "{")
-    .replace(/\}[\s\S]*$/, "}")
-    .trim();
+  let cleaned = text.replace(/^[\s\S]*?(\{|\[)/, "$1").replace(/(\}|\])[\s\S]*$/, "$1").trim();
+  if (cleaned.startsWith("[")) cleaned = `{"ingredients":${cleaned},"steps":[]}`;
   try {
     const parsed = JSON.parse(cleaned) as {
-      ingredients?: Array<{ name?: string; aisle?: string }>;
+      ingredients?: Array<{ name?: string; aisle?: string; quantity?: string; notes?: string }>;
       steps?: string[];
+      instructions?: string[];
     };
-    const ingredients = (parsed.ingredients ?? [])
+    const raw = parsed.ingredients ?? [];
+    const steps = Array.isArray(parsed.instructions)
+      ? parsed.instructions.filter((s): s is string => typeof s === "string").slice(0, 30)
+      : Array.isArray(parsed.steps)
+        ? parsed.steps.filter((s): s is string => typeof s === "string").slice(0, 30)
+        : [];
+    type Ing = { name: string; aisle?: string; quantity?: string; notes?: string };
+    const withAisle = raw
       .filter(
-        (x): x is { name: string; aisle: string } =>
-          x != null &&
-          typeof x.name === "string" &&
-          typeof x.aisle === "string"
+        (x): x is Ing =>
+          x != null && typeof x.name === "string" && String(x.name).trim().length > 0
       )
-      .map((x) => ({
-        name: String(x.name).trim(),
-        aisle: AISLES.includes(x.aisle as (typeof AISLES)[number])
-          ? x.aisle
-          : "Other",
-      }))
-      .filter((x) => x.name.length > 0);
-    const steps = Array.isArray(parsed.steps)
-      ? parsed.steps.filter((s): s is string => typeof s === "string").slice(0, 30)
-      : [];
+      .map((x: Ing) => {
+        const nameStr = String(x.name).trim();
+        const q = x.quantity && String(x.quantity).trim();
+        const n = x.notes && String(x.notes).trim();
+        const name = q ? `${q} ${nameStr}${n ? ` (${n})` : ""}` : nameStr + (n ? ` (${n})` : "");
+        const aisle =
+          typeof x.aisle === "string" && AISLES.includes(x.aisle as (typeof AISLES)[number])
+            ? x.aisle
+            : categorizeIngredientToAisle(nameStr);
+        return { name, aisle };
+      });
+    const ingredients = withAisle.filter((x) => x.name.length > 0);
     return { ingredients, steps };
   } catch {
     return { ingredients: [], steps: [] };
@@ -518,6 +558,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const isVideo = isVideoOrSocialUrl(url);
   const geminiKey = process.env.GEMINI_API_KEY ?? "";
 
+  if (!geminiKey) {
+    console.error("[parse] GEMINI_API_KEY is not set in Vercel environment. Set it in Project Settings → Environment Variables and redeploy.");
+  }
+
   try {
     const response = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; RecipeParser/1.0)" },
@@ -527,7 +571,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const recipe = extractFromHtml(html, isVideo);
     const ogDescription = extractOgDescription(html);
 
-    // For YouTube URLs: Gemini analyzes the actual video (full prompt: quantities, steps, equipment).
+    // For YouTube URLs: Gemini analyzes the actual video (video part first, then prompt).
     if (geminiKey && isYouTubeUrl(url)) {
       const fromVideo = await getRecipeFromYouTubeVideoWithGemini(url, geminiKey);
       if (fromVideo && (fromVideo.ingredients?.length ?? 0) > 0) {
@@ -538,9 +582,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
         return res.status(200).json(responsePayload);
       }
+      if (fromVideo && (fromVideo.ingredients?.length ?? 0) === 0) {
+        console.error("[parse] YouTube video analysis returned empty ingredients. Check Vercel logs for Gemini errors.");
+      } else if (!fromVideo) {
+        console.error("[parse] YouTube video analysis returned null (parse error or Gemini API failure). Check Vercel logs.");
+      }
     }
 
-    // For other video/social URLs or when YouTube video analysis failed: use preview image (thumbnail).
+    // Fallback: use preview image (thumbnail) for video/social URLs or when YouTube video path failed.
     const shouldUseVision =
       geminiKey &&
       recipe.imageUrl &&
@@ -570,14 +619,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           };
           return res.status(200).json(responsePayload);
         }
+        console.error("[parse] Thumbnail vision returned no ingredients.");
+      } else {
+        console.error("[parse] Could not fetch thumbnail image from", recipe.imageUrl?.slice(0, 50));
       }
     }
 
-    // No vision or vision returned nothing: return HTML-extracted recipe; add empty groceryByAisle if desired.
+    // No Gemini key, or both video and thumbnail paths returned nothing.
     const responsePayload: ParseResponse = {
       ...recipe,
       groceryByAisle: [],
     };
+    if (!geminiKey) {
+      (responsePayload as ParseResponse & Record<string, unknown>).error = "GEMINI_API_KEY not set. Add it in Vercel → Settings → Environment Variables and redeploy.";
+    }
     return res.status(200).json(responsePayload);
   } catch (e) {
     return res
