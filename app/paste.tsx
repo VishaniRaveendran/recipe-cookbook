@@ -273,9 +273,9 @@ export default function PasteScreen() {
                 editable={!loading}
               />
               <Text style={styles.manualHint}>
-                No ingredients were found. You can copy ingredients from the
-                video description or another app and paste them below. You can
-                also save the link now and add ingredients later.
+                {parsed?.error
+                  ? parsed.error
+                  : "No ingredients were found. You can copy ingredients from the video description or another app and paste them below. You can also save the link now and add ingredients later."}
               </Text>
               <Pressable
                 style={({ pressed }) => [

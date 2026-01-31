@@ -120,10 +120,12 @@ export default function VideosToListScreen() {
     setLoading(true);
     setProgress(`Parsing 1 of ${urls.length}…`);
     const parsedWithUrls: { url: string; recipe: ParsedRecipe }[] = [];
+    let lastError: string | null = null;
     for (let i = 0; i < urls.length; i++) {
       setProgress(`Parsing ${i + 1} of ${urls.length}…`);
       try {
         const result = await parseRecipeFromUrl(urls[i]);
+        if (result?.error) lastError = result.error;
         if (
           result &&
           (result.ingredients?.length > 0 || result.steps?.length > 0)
@@ -142,7 +144,7 @@ export default function VideosToListScreen() {
       setProgress(null);
       Alert.alert(
         "No recipes found",
-        "We couldn’t extract ingredients from the links. Try recipe or video URLs that include ingredients in the description."
+        lastError ?? "We couldn't extract ingredients from the links. Try recipe or video URLs that include ingredients in the description."
       );
       return;
     }

@@ -53,6 +53,8 @@ export interface ParsedRecipe {
   servings?: number;
   /** When present, ingredients grouped by supermarket aisle (Produce, Dairy, etc.). */
   groceryByAisle?: GroceryByAisle[];
+  /** Hint from parse API when link could not be read (e.g. Instagram login wall). */
+  error?: string;
 }
 
 /** Single item in kitchen inventory (fridge/pantry). */

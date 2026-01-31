@@ -71,6 +71,7 @@ export async function parseRecipeFromUrl(
           steps,
           ...(servings != null && { servings }),
           ...(groceryByAisle?.length ? { groceryByAisle } : {}),
+          ...(typeof data?.error === "string" && data.error.trim() ? { error: data.error.trim() } : {}),
         };
       }
     } catch {

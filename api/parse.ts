@@ -213,6 +213,22 @@ const BROWSER_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
+/** Facebook/Instagram crawler UA — sometimes gets og:image for share previews. */
+const CRAWLER_HEADERS = {
+  "User-Agent":
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+function isInstagramUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.toLowerCase().includes("instagram.com");
+  } catch {
+    return false;
+  }
+}
+
 /** Max size for inline video sent to Gemini (20MB). */
 const MAX_INLINE_VIDEO_BYTES = 20 * 1024 * 1024;
 
@@ -680,13 +696,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const response = await fetch(url, {
-      headers: BROWSER_HEADERS,
-    });
+    let response = await fetch(url, { headers: BROWSER_HEADERS });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const html = await response.text();
-    const recipe = extractFromHtml(html, isVideo);
-    const ogDescription = extractOgDescription(html);
+    let html = await response.text();
+    let recipe = extractFromHtml(html, isVideo);
+    let ogDescription = extractOgDescription(html);
+
+    // Instagram often returns a login wall to servers; try crawler UA to get og:image.
+    if (isInstagramUrl(url) && !recipe.imageUrl) {
+      const crawlerRes = await fetch(url, { headers: CRAWLER_HEADERS });
+      if (crawlerRes.ok) {
+        const crawlerHtml = await crawlerRes.text();
+        const crawlerRecipe = extractFromHtml(crawlerHtml, isVideo);
+        if (crawlerRecipe.imageUrl) {
+          html = crawlerHtml;
+          recipe = crawlerRecipe;
+          ogDescription = extractOgDescription(crawlerHtml);
+        }
+      }
+    }
 
     // For YouTube URLs: Gemini analyzes the actual video (video part first, then prompt).
     if (geminiKey && isYouTubeUrl(url)) {
@@ -778,6 +806,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     };
     if (!geminiKey) {
       (responsePayload as ParseResponse & Record<string, unknown>).error = "GEMINI_API_KEY not set. Add it in Vercel → Settings → Environment Variables and redeploy.";
+    } else if (isInstagramUrl(url) && (recipe.ingredients?.length ?? 0) === 0) {
+      (responsePayload as ParseResponse & Record<string, unknown>).error =
+        "Instagram didn't return the reel preview. Use \"Videos to list\" in the app and pick the video file, or open the reel in Instagram and paste any recipe text here.";
     }
     return res.status(200).json(responsePayload);
   } catch (e) {
