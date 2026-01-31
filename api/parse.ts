@@ -209,29 +209,101 @@ Respond with ONLY a valid JSON object, no markdown or explanation. Format:
 }
 If you cannot determine steps, omit "steps" or use an empty array. Every ingredient must have "name" and "aisle".`;
 
-/** Prompt when Gemini receives the actual video (YouTube URL); same output format. */
-const VIDEO_PROMPT = `You are analyzing a cooking or recipe video.
+/** Full video analysis prompt: watch entire video, extract quantities, steps, equipment. */
+const VIDEO_PROMPT = `CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
-Tasks:
-1. List every ingredient you can identify from the video (what is shown or mentioned). Use short grocery-style labels (e.g. "tomatoes", "olive oil", "fresh basil").
-2. For each ingredient, assign exactly one supermarket aisle. Use ONLY one of these exact names: Produce, Dairy, Meat, Pantry, Bakery, Frozen, Other.
+1. WATCH THE ENTIRE VIDEO FROM START TO FINISH
+   - DO NOT skip any parts
+   - Watch every single frame carefully
+   - Ingredients may appear at ANY point in the video
 
-Respond with ONLY a valid JSON object, no markdown or explanation. Format:
+2. IDENTIFY EVERY INGREDIENT
+   - Look for ingredients being shown, added, or mentioned
+   - Note EXACT brand names if visible on packaging
+   - Include garnishes, toppings, and optional ingredients
+   - Don't miss any ingredient, even if shown briefly
+
+3. EXTRACT EXACT QUANTITIES AND MEASUREMENTS
+   - Look for measuring cups, spoons, scales showing numbers
+   - Read any text overlays showing measurements
+   - If you see "1 cup", "2 tablespoons", "500g" - record it EXACTLY
+   - If quantity is not clearly shown, estimate based on visual size:
+     * Small pinch, medium handful, large bowl, etc.
+   - NEVER say "to taste" unless the chef specifically says that
+   - Format: "2 cups", "1 tablespoon", "500 grams", "1/2 teaspoon"
+
+4. EXTRACT PORTION/SERVING SIZE
+   - Count how many plates/bowls are being filled
+   - Look for chef mentioning "serves 4" or "makes 12 cookies"
+   - Estimate based on final dish size if not mentioned
+
+5. RECORD EVERY COOKING STEP IN ORDER
+   - Watch what the chef DOES, not just what they say
+   - Include techniques: "whisk", "fold", "sauté", "simmer"
+   - Include all timings: "cook for 5 minutes", "bake until golden"
+   - Include temperatures: "350°F", "medium-high heat"
+
+6. IMPORTANT - ONLY USE VISUAL INFORMATION
+   - DO NOT use video title, description, or captions
+   - ONLY extract what you SEE and HEAR in the video itself
+   - If ingredients are blocked or unclear, mark as "amount not visible"
+
+Return ONLY valid JSON (no markdown, no code blocks, no extra text):
+
 {
+  "title": "Descriptive recipe name based on what's being made",
+  "servings": "number of servings or portions (e.g., '4 servings', '12 cookies')",
+  "cookingTime": "total time from start to finish (e.g., '30 minutes', '1 hour 15 minutes')",
+  "prepTime": "preparation time if mentioned separately",
+  "temperature": "oven/cooking temperature if shown (e.g., '350°F (175°C)', 'medium heat')",
   "ingredients": [
-    { "name": "ingredient name", "aisle": "Produce" },
-    { "name": "another ingredient", "aisle": "Pantry" }
+    {
+      "name": "ingredient name (be specific: 'all-purpose flour' not just 'flour')",
+      "quantity": "EXACT amount with unit (e.g., '2 cups', '1 tablespoon', '500g')",
+      "notes": "any special notes (e.g., 'softened', 'room temperature', 'divided')"
+    }
   ],
-  "steps": ["optional step 1", "optional step 2"]
+  "instructions": [
+    "Detailed step 1 with timing and technique",
+    "Detailed step 2 with timing and technique"
+  ],
+  "notes": "Any tips, tricks, or important observations from the video",
+  "equipment": ["list of equipment used: 'mixing bowl', 'whisk', 'baking sheet', etc."]
 }
-If you cannot determine steps, omit "steps" or use an empty array. Every ingredient must have "name" and "aisle".`;
 
-/** Call Gemini API with YouTube video URL (actual video analysis, not thumbnail). Returns ingredients with aisle and optional steps. */
+NOW ANALYZE THE VIDEO:`;
+
+/** Parsed full recipe from video (new prompt format). */
+interface VideoRecipeParsed {
+  title?: string;
+  servings?: string;
+  cookingTime?: string;
+  prepTime?: string;
+  temperature?: string;
+  ingredients?: Array<{ name?: string; quantity?: string; notes?: string }>;
+  instructions?: string[];
+  notes?: string;
+  equipment?: string[];
+}
+
+/** Categorize ingredient name to supermarket aisle (keyword match). */
+function categorizeIngredientToAisle(name: string): string {
+  const lower = name.toLowerCase();
+  if (/\b(onion|garlic|tomato|lettuce|carrot|celery|potato|lemon|lime|apple|banana|avocado|pepper|broccoli|spinach|kale|herb|basil|parsley|cilantro|ginger|cucumber|zucchini|mushroom|scallion|shallot)\b/.test(lower)) return "Produce";
+  if (/\b(milk|cream|butter|cheese|yogurt|egg)\b/.test(lower)) return "Dairy";
+  if (/\b(chicken|beef|pork|bacon|sausage|turkey|lamb|fish|salmon|shrimp|meat)\b/.test(lower)) return "Meat";
+  if (/\b(oil|vinegar|salt|sugar|flour|rice|pasta|noodle|sauce|soy|broth|stock|canned|beans|lentil|spice|paprika|cumin|oregano|nut|honey|maple|mustard|ketchup|breadcrumb|baking|vanilla|chocolate|coconut|almond|peanut)\b/.test(lower)) return "Pantry";
+  if (/\b(bread|tortilla|wrap|pita)\b/.test(lower)) return "Bakery";
+  if (/\b(frozen|ice)\b/.test(lower)) return "Frozen";
+  return "Other";
+}
+
+/** Call Gemini API with YouTube video URL (actual video analysis). Returns full recipe in new format. */
 async function getRecipeFromYouTubeVideoWithGemini(
   youtubeUrl: string,
   apiKey: string
-): Promise<{ ingredients: { name: string; aisle: string }[]; steps: string[] }> {
-  if (!apiKey) return { ingredients: [], steps: [] };
+): Promise<VideoRecipeParsed | null> {
+  if (!apiKey) return null;
   const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const body = {
     contents: [
@@ -244,7 +316,7 @@ async function getRecipeFromYouTubeVideoWithGemini(
     ],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 4096,
       responseMimeType: "application/json",
     },
   };
@@ -259,44 +331,78 @@ async function getRecipeFromYouTubeVideoWithGemini(
   };
   if (!res.ok) {
     console.error("[parse] Gemini YouTube video error:", res.status, data.error?.message ?? (data as { error?: { message?: string } }).error);
-    return { ingredients: [], steps: [] };
+    return null;
   }
   if (data.error?.message) {
     console.error("[parse] Gemini YouTube video API error:", data.error.message);
-    return { ingredients: [], steps: [] };
+    return null;
   }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-  if (!text) return { ingredients: [], steps: [] };
+  if (!text) return null;
   const cleaned = text
     .replace(/^[\s\S]*?\{/, "{")
     .replace(/\}[\s\S]*$/, "}")
     .trim();
   try {
-    const parsed = JSON.parse(cleaned) as {
-      ingredients?: Array<{ name?: string; aisle?: string }>;
-      steps?: string[];
-    };
-    const ingredients = (parsed.ingredients ?? [])
-      .filter(
-        (x): x is { name: string; aisle: string } =>
-          x != null &&
-          typeof x.name === "string" &&
-          typeof x.aisle === "string"
-      )
-      .map((x) => ({
-        name: String(x.name).trim(),
-        aisle: AISLES.includes(x.aisle as (typeof AISLES)[number])
-          ? x.aisle
-          : "Other",
-      }))
-      .filter((x) => x.name.length > 0);
-    const steps = Array.isArray(parsed.steps)
-      ? parsed.steps.filter((s): s is string => typeof s === "string").slice(0, 30)
-      : [];
-    return { ingredients, steps };
+    const parsed = JSON.parse(cleaned) as VideoRecipeParsed;
+    return parsed;
   } catch {
-    return { ingredients: [], steps: [] };
+    return null;
   }
+}
+
+/** Map VideoRecipeParsed to ingredients string[], steps, servings number, and groceryByAisle. */
+function mapVideoRecipeToResponse(
+  parsed: VideoRecipeParsed,
+  fallbackTitle: string,
+  fallbackImageUrl?: string
+): ParseResponse {
+  const title = (parsed.title && String(parsed.title).trim()) || fallbackTitle;
+  const ingredientsRaw = parsed.ingredients ?? [];
+  const ingredients: string[] = [];
+  const byAisle = new Map<string, string[]>();
+  for (const a of AISLES) byAisle.set(a, []);
+  const seen = new Set<string>();
+  for (const ing of ingredientsRaw) {
+    const name = ing?.name && String(ing.name).trim();
+    if (!name) continue;
+    const quantity = ing?.quantity ? String(ing.quantity).trim() : "";
+    const notes = ing?.notes ? String(ing.notes).trim() : "";
+    const line = [quantity, name].filter(Boolean).join(" ") + (notes ? ` (${notes})` : "");
+    ingredients.push(line);
+    const key = name.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      const aisle = categorizeIngredientToAisle(name);
+      const list = byAisle.get(aisle) ?? [];
+      list.push(line);
+      byAisle.set(aisle, list);
+    }
+  }
+  const groceryByAisle: GroceryByAisle[] = AISLES.map((aisle) => ({
+    aisle,
+    items: byAisle.get(aisle) ?? [],
+  })).filter((g) => g.items.length > 0);
+  const steps = Array.isArray(parsed.instructions)
+    ? parsed.instructions.filter((s): s is string => typeof s === "string").slice(0, 50)
+    : [];
+  const servingsMatch = parsed.servings && String(parsed.servings).match(/\d+/);
+  const servings = servingsMatch ? parseInt(servingsMatch[0], 10) : 4;
+  const response: ParseResponse = {
+    title,
+    imageUrl: fallbackImageUrl,
+    ingredients,
+    steps,
+    servings: Number.isFinite(servings) && servings > 0 ? servings : 4,
+    groceryByAisle,
+  };
+  const out = response as ParseResponse & Record<string, unknown>;
+  if (parsed.cookingTime) out.cookingTime = parsed.cookingTime;
+  if (parsed.prepTime) out.prepTime = parsed.prepTime;
+  if (parsed.temperature) out.temperature = parsed.temperature;
+  if (parsed.notes) out.notes = parsed.notes;
+  if (Array.isArray(parsed.equipment) && parsed.equipment.length > 0) out.equipment = parsed.equipment;
+  return response;
 }
 
 /** Call Gemini multimodal API: image + optional text. Returns ingredients with aisle and optional steps. */
@@ -421,20 +527,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const recipe = extractFromHtml(html, isVideo);
     const ogDescription = extractOgDescription(html);
 
-    // For YouTube URLs: Gemini can analyze the actual video (audio + frames). Try that first.
+    // For YouTube URLs: Gemini analyzes the actual video (full prompt: quantities, steps, equipment).
     if (geminiKey && isYouTubeUrl(url)) {
       const fromVideo = await getRecipeFromYouTubeVideoWithGemini(url, geminiKey);
-      if (fromVideo.ingredients.length > 0) {
-        const ingredients = fromVideo.ingredients.map((x) => x.name);
-        const groceryByAisle = buildGroceryByAisle(fromVideo.ingredients);
-        const responsePayload: ParseResponse = {
-          title: recipe.title,
-          imageUrl: recipe.imageUrl,
-          ingredients,
-          steps: fromVideo.steps.length > 0 ? fromVideo.steps : recipe.steps,
-          servings: recipe.servings,
-          groceryByAisle,
-        };
+      if (fromVideo && (fromVideo.ingredients?.length ?? 0) > 0) {
+        const responsePayload = mapVideoRecipeToResponse(
+          fromVideo,
+          recipe.title,
+          recipe.imageUrl
+        );
         return res.status(200).json(responsePayload);
       }
     }

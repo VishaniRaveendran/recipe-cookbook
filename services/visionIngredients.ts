@@ -12,14 +12,43 @@ const VISION_PROVIDER =
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? "";
 const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY ?? "";
 
-const INGREDIENTS_PROMPT = `You are analyzing a single frame from a cooking video or a photo of ingredients/food.
-List every ingredient you can identify that is visible or clearly implied (e.g. in a bowl, on a cutting board, in a pan).
-For each ingredient return:
-- "name": a short grocery-style label (e.g. "tomatoes", "olive oil", "fresh basil")
-- "confidence": a number from 0 to 1 indicating how sure you are (1 = clearly visible)
+const INGREDIENTS_PROMPT = `CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
-Respond with ONLY a valid JSON array, no markdown or explanation. Example:
-[{"name":"garlic","confidence":0.95},{"name":"olive oil","confidence":0.9}]`;
+1. WATCH THE ENTIRE VIDEO FROM START TO FINISH (or analyze every part of the image)
+   - DO NOT skip any parts
+   - Ingredients may appear at ANY point
+
+2. IDENTIFY EVERY INGREDIENT
+   - Look for ingredients being shown, added, or mentioned
+   - Note EXACT brand names if visible on packaging
+   - Include garnishes, toppings, and optional ingredients
+
+3. EXTRACT EXACT QUANTITIES AND MEASUREMENTS when visible
+   - Look for measuring cups, spoons, scales, text overlays
+   - If you see "1 cup", "2 tablespoons", "500g" - record it EXACTLY
+   - If quantity is not visible, estimate: small pinch, medium handful, etc.
+   - Format: "2 cups", "1 tablespoon", "500 grams"
+
+4. IMPORTANT - ONLY USE VISUAL INFORMATION from the frame(s) or image
+   - If ingredients are blocked or unclear, use "amount not visible"
+
+Return ONLY valid JSON (no markdown, no code blocks):
+
+{
+  "title": "Descriptive recipe name based on what's being made",
+  "servings": "e.g. '4 servings' or '12 cookies'",
+  "ingredients": [
+    {
+      "name": "ingredient name (specific: 'all-purpose flour' not just 'flour')",
+      "quantity": "EXACT amount with unit (e.g. '2 cups', '1 tablespoon')",
+      "notes": "e.g. 'softened', 'room temperature'"
+    }
+  ],
+  "instructions": ["Step 1 with timing and technique", "Step 2", "..."],
+  "equipment": ["mixing bowl", "whisk", "baking sheet", "..."]
+}
+
+NOW ANALYZE THE VIDEO/IMAGE:`;
 
 function generateId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -40,14 +69,35 @@ function parseImageInput(
   return { base64: trimmed, mimeType: "image/jpeg" };
 }
 
-/** Parse AI response into array of { name, confidence }. */
+/** Parse AI response: supports (1) array of { name, confidence } or (2) full recipe object with ingredients: [{ name, quantity, notes }]. */
 function parseIngredientsResponse(text: string): { name: string; confidence: number }[] {
   const cleaned = text
-    .replace(/^[\s\S]*?\[/, "[")
-    .replace(/\][\s\S]*$/, "]")
+    .replace(/^[\s\S]*?(\[|\{)/, "$1")
+    .replace(/(\]|\})[\s\S]*$/, "$1")
     .trim();
   try {
     const parsed = JSON.parse(cleaned) as unknown;
+    // New format: object with ingredients: [{ name, quantity, notes }]
+    if (
+      parsed != null &&
+      typeof parsed === "object" &&
+      Array.isArray((parsed as { ingredients?: unknown }).ingredients)
+    ) {
+      const ingredients = (parsed as { ingredients: Array<{ name?: string; quantity?: string; notes?: string }> }).ingredients;
+      return ingredients
+        .filter(
+          (ing): ing is { name: string; quantity?: string; notes?: string } =>
+            ing != null && typeof ing.name === "string" && String(ing.name).trim().length > 0
+        )
+        .map((ing) => {
+          const name = String(ing.name).trim();
+          const quantity = ing.quantity ? String(ing.quantity).trim() : "";
+          const notes = ing.notes ? String(ing.notes).trim() : "";
+          const line = [quantity, name].filter(Boolean).join(" ") + (notes ? ` (${notes})` : "");
+          return { name: line, confidence: 0.9 };
+        });
+    }
+    // Old format: array of { name, confidence }
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(
@@ -93,7 +143,7 @@ async function callGemini(
     ],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 4096,
       responseMimeType: "application/json",
     },
   };
